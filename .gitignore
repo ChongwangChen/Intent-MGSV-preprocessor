@@ -1,0 +1,45 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Local environments and editor files
+.venv/
+venv/
+env/
+.env
+.env.*
+.idea/
+.vscode/
+
+# Secrets / login state
+qqmusic_cookies*.txt
+acrcloud_config.json
+*.cookies
+*.cookie
+
+# Large or mutable data
+outputs/
+DouK-Source/
+transnetv2-weights/
+TransNetV2/
+tmp_preview/
+
+# Local databases and logs
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Model checkpoints and generated features
+*.pt
+*.pth
+*.ckpt
+*.npz
+
+# Office/temp artifacts
+~$*
+*.tmp
+*.bak

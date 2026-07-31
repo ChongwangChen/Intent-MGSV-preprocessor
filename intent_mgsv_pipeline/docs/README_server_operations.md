@@ -38,8 +38,51 @@ ffmpeg -version
 ffprobe -version
 ```
 
-`auto.py` 还依赖 TensorFlow、BeatNet 和 TransNetV2。服务器首次运行
-`auto.py` 前，应确认原 `mgsv_data` 环境中的这些依赖和模型权重已经迁移完成。
+`mgsv_data` 专门运行识曲、音乐准备、数据库和标注网站。`auto.py` 同时依赖
+TensorFlow、PyTorch、BeatNet 和 TransNetV2，建议使用独立的
+`mgsv_preprocess` 环境，避免模型依赖升级或降级时影响正在运行的多人标注：
+
+```bash
+cd /data/users/ccw/intent_mgsv/repo/MGSV_preprocessor
+conda create -n mgsv_preprocess python=3.10 -y
+conda activate mgsv_preprocess
+
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install "numpy==2.2.6" "Cython>=3.0,<4"
+python -m pip install -r requirements_auto.txt
+```
+
+`BeatNet 1.1.1` 没有完整声明它运行时使用的 `madmom`，因此
+`requirements_auto.txt` 已显式固定到本地验证过的 `madmom` 版本。项目只使用
+BeatNet 离线模式，不要求服务器安装麦克风和 PyAudio。
+
+安装后必须先做一次完整自检：
+
+```bash
+source config/server.env
+conda activate mgsv_preprocess
+python check_auto_environment.py
+```
+
+只有全部显示 `[OK]` 后才运行：
+
+```bash
+python auto.py
+```
+
+还要确认仓库根目录下存在完整的 `transnetv2-weights/`：
+
+```text
+transnetv2-weights/
+  saved_model.pb
+  variables/
+    variables.index
+    variables.data-00000-of-00001
+```
+
+`transformers`、`open_clip_torch` 和 `Pillow` 只服务于当前主流程没有调用的
+实验性 Genre/场景模型，不是 `auto.py` 生成主表的必需依赖。Genre 仍留给人工
+核验，不建议为了它额外下载大模型。
 
 ## 二、服务器路径配置
 

@@ -27,7 +27,7 @@ except ImportError:
 # ==================================================================
 
 from transnetv2 import TransNetV2
-from BeatNet.BeatNet import BeatNet
+from intent_mgsv_pipeline.preprocessing.beatnet_compat import BeatNet
 from scipy.signal import find_peaks
 from scipy.ndimage import gaussian_filter1d
 

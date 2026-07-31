@@ -38,10 +38,11 @@ EXPLICIT_FIELDS = {
 }
 
 
-def export_db(db_path: Path, out_path: Path, annotator_id: str | None = "owner") -> dict[str, int]:
+def load_annotation_dataframe(
+    db_path: Path,
+    annotator_id: str | None = "owner",
+) -> pd.DataFrame:
     init_db(db_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
     where = ""
     params: tuple[object, ...] = ()
     if annotator_id:
@@ -86,7 +87,12 @@ def export_db(db_path: Path, out_path: Path, annotator_id: str | None = "owner")
             row["annotation_status"] = record["status"]
             rows.append(row)
 
-    df = pd.DataFrame(rows)
+    return pd.DataFrame(rows)
+
+
+def export_db(db_path: Path, out_path: Path, annotator_id: str | None = "owner") -> dict[str, int]:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df = load_annotation_dataframe(db_path, annotator_id)
     if out_path.suffix.lower() == ".csv":
         df.to_csv(out_path, index=False, encoding="utf-8-sig")
     else:

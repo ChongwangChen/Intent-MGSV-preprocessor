@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from intent_mgsv_pipeline.runtime_config import load_runtime_paths
+import pandas as pd
+
+from intent_mgsv_pipeline.runtime_config import RuntimePaths, load_runtime_paths
 from yt_dy_auto import (
     RECOGNITION_VERSION,
     RecognitionCandidate,
     build_sample_starts,
     choose_candidate,
+    process_videos,
     should_process,
     should_process_video,
 )
@@ -89,6 +93,58 @@ class MusicRecognitionTests(unittest.TestCase):
             paths.douk_download_root,
             resolved_root / "DouK-Source" / "Volume" / "Download",
         )
+
+    def test_download_mode_prepares_already_recognized_tracking_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            download_root = root / "download"
+            output_dir = root / "outputs"
+            download_root.mkdir()
+            output_dir.mkdir()
+            video = download_root / "recognized.mp4"
+            video.write_bytes(b"video")
+            tracking = output_dir / "tracking.xlsx"
+            pd.DataFrame(
+                [
+                    {
+                        "video_id": video.name,
+                        "video_path": str(video),
+                        "song_title": "Song",
+                        "song_artist": "Artist",
+                        "status": "recognized",
+                        "recognition_version": RECOGNITION_VERSION,
+                    }
+                ]
+            ).to_excel(tracking, index=False)
+            paths = RuntimePaths(
+                project_root=root,
+                douk_download_root=download_root,
+                douk_data_excel=root / "data.xlsx",
+                output_dir=output_dir,
+                full_music_dir=output_dir / "full_music",
+                full_songs_dir=output_dir / "full_songs",
+                acr_tracking_excel=tracking,
+                master_excel=output_dir / "master.xlsx",
+                server_db=output_dir / "server.sqlite3",
+                acr_config_file=root / "acr.json",
+            )
+            with (
+                patch(
+                    "yt_dy_auto.load_acrcloud_config",
+                    return_value={"host": "example", "access_key": "x", "access_secret": "y"},
+                ),
+                patch(
+                    "intent_mgsv_pipeline.music_preparation.pipeline.prepare_recognized_music",
+                    return_value={"processed": 1},
+                ) as prepare,
+            ):
+                counts = process_videos(paths, recognition_only=False)
+            self.assertEqual(counts["processed"], 0)
+            prepare.assert_called_once()
+            self.assertEqual(
+                prepare.call_args.kwargs["video_ids"],
+                {video.name},
+            )
 
 
 if __name__ == "__main__":

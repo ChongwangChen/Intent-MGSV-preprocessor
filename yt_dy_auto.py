@@ -37,6 +37,8 @@ class RecognitionCandidate:
     artist: str
     score: int
     sample_start: float
+    genre: str = ""
+    album: str = ""
 
     @property
     def key(self) -> tuple[str, str]:
@@ -211,6 +213,14 @@ def identify_sample(
             for artist_item in artists
             if artist_item.get("name")
         )
+        genres = item.get("genres") or []
+        genre = "/".join(
+            str(genre_item.get("name", "")).strip()
+            for genre_item in genres
+            if genre_item.get("name")
+        )
+        album_data = item.get("album") or {}
+        album = str(album_data.get("name", "")).strip()
         if title:
             candidates.append(
                 RecognitionCandidate(
@@ -218,6 +228,8 @@ def identify_sample(
                     artist=artist,
                     score=int(item.get("score", 0) or 0),
                     sample_start=sample_start,
+                    genre=genre,
+                    album=album,
                 )
             )
     return candidates
@@ -298,6 +310,8 @@ def recognize_music_multi_window(
     return {
         "title": best.title if best else "",
         "artist": best.artist if best else "",
+        "genre": best.genre if best else "",
+        "album": best.album if best else "",
         "confidence": best.score if best else 0,
         "votes": votes,
         "sample_starts": ",".join(f"{value:.3f}" for value in attempted),
@@ -438,6 +452,7 @@ def process_videos(
     dataset_video_ids = load_dataset_video_ids(paths.master_excel)
 
     new_records: list[dict[str, Any]] = []
+    recognized_video_ids: list[str] = []
     counts = {
         "scanned": 0,
         "skipped_dataset": 0,
@@ -481,18 +496,7 @@ def process_videos(
                 f"  recognized: {title} - {artist} "
                 f"(score={result['confidence']}, votes={result['votes']})"
             )
-            if not recognition_only:
-                filename = (
-                    f"{safe_file_part(title)}_{safe_file_part(artist)}.m4a"
-                )
-                downloaded = download_full_music(
-                    title,
-                    artist,
-                    paths.full_music_dir / filename,
-                )
-                if downloaded:
-                    full_music_path = str(downloaded)
-                    final_status = "downloaded"
+            recognized_video_ids.append(video_id)
         else:
             counts["failed"] += 1
             print(f"  recognition failed: {result['recognition_error'] or 'no match'}")
@@ -503,6 +507,8 @@ def process_videos(
                 "video_path": str(video_path),
                 "song_title": title,
                 "song_artist": artist,
+                "acr_genre": result["genre"],
+                "acr_album": result["album"],
                 "acr_confidence": result["confidence"],
                 "recognition_votes": result["votes"],
                 "recognition_samples": result["sample_starts"],
@@ -515,6 +521,36 @@ def process_videos(
         )
         save_tracking(paths.acr_tracking_excel, tracking_df, new_records)
 
+    if not recognition_only:
+        from intent_mgsv_pipeline.music_preparation.pipeline import (
+            prepare_recognized_music,
+        )
+
+        preparation_video_ids = set(recognized_video_ids)
+        if not tracking_df.empty:
+            for previous in tracking_df.to_dict("records"):
+                video_id = str(previous.get("video_id", "") or "").strip()
+                title = str(previous.get("song_title", "") or "").strip()
+                status = str(previous.get("status", "") or "").strip()
+                if not video_id or not title or status != "recognized":
+                    continue
+                if not include_existing_dataset and video_id in dataset_video_ids:
+                    continue
+                preparation_video_ids.add(video_id)
+
+        preparation_counts = prepare_recognized_music(
+            paths=paths,
+            retry_failed=retry_failed,
+            limit=max(0, limit),
+            video_ids=preparation_video_ids,
+        )
+        print(
+            "\nMusic preparation: "
+            + ", ".join(
+                f"{key}={value}"
+                for key, value in preparation_counts.items()
+            )
+        )
     return counts
 
 

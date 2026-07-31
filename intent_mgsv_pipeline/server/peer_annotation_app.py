@@ -7,7 +7,7 @@ from typing import Any
 import gradio as gr
 
 from intent_mgsv_pipeline.runtime_config import PATHS
-from intent_mgsv_pipeline.server.assignment import claim_next
+from intent_mgsv_pipeline.server.assignment import annotation_progress, claim_next
 from intent_mgsv_pipeline.server.db import DEFAULT_DB
 from intent_mgsv_pipeline.server.peer_annotation import (
     SCORE_OPTIONS,
@@ -189,13 +189,18 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                     *(gr.update(visible=False, value=None) for _ in score_components),
                 )
             row = claim_next(db_path, annotator_id, owner_id=owner_id)
+            progress = annotation_progress(db_path, annotator_id, owner_id)
+            progress_text = (
+                f"进度：{progress['completed']}/{progress['total']}，"
+                f"剩余 {progress['remaining']} 条"
+            )
             if row is None:
                 return (
                     annotator_id,
                     "",
                     None,
                     "",
-                    "该标注者已完成全部样本。",
+                    f"该标注者当前没有待标样本。{progress_text}",
                     [],
                     [],
                     [],
@@ -207,7 +212,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 video_id,
                 _resolve_video(row),
                 _metadata(row),
-                f"正在标注：{video_id}",
+                f"正在标注：{video_id}  \n{progress_text}",
                 _split_values(row.get("emotion")),
                 _split_values(row.get("style")),
                 _split_values(row.get("usage_scene")),

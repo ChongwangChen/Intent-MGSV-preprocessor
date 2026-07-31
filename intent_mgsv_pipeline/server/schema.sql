@@ -102,6 +102,46 @@ CREATE TABLE IF NOT EXISTS events (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS music_preparations (
+    video_id INTEGER PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+    song_id INTEGER REFERENCES songs(id) ON DELETE SET NULL,
+    recognized_title TEXT,
+    recognized_artist TEXT,
+    recognition_confidence REAL,
+    recognition_votes INTEGER,
+    genre_suggestion TEXT,
+    genre_source TEXT,
+    genre_confidence REAL,
+    qq_song_mid TEXT,
+    qq_match_score REAL,
+    download_source TEXT,
+    full_song_path TEXT,
+    song_offset REAL,
+    video_audio_start REAL NOT NULL DEFAULT 0,
+    aligned_duration REAL,
+    match_score REAL,
+    status TEXT NOT NULL DEFAULT 'recognized',
+    error TEXT,
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS song_reviews (
+    video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    reviewer_id TEXT NOT NULL,
+    song_id INTEGER REFERENCES songs(id) ON DELETE SET NULL,
+    song_correct INTEGER,
+    alignment_correct INTEGER,
+    corrected_offset REAL,
+    final_genre TEXT,
+    note TEXT,
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(video_id, reviewer_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_annotations_annotator_status
 ON annotations(annotator_id, status);
 
@@ -111,3 +151,8 @@ ON annotation_assignments(status, lease_until);
 CREATE INDEX IF NOT EXISTS idx_jobs_status
 ON jobs(status, job_type);
 
+CREATE INDEX IF NOT EXISTS idx_music_preparations_status
+ON music_preparations(status, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_song_reviews_reviewer_status
+ON song_reviews(reviewer_id, status);

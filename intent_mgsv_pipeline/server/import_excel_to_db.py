@@ -29,7 +29,12 @@ def _row_dict(row: pd.Series) -> dict[str, object]:
     return {str(k): scalar(v) for k, v in row.to_dict().items()}
 
 
-def _upsert_song(conn, data: dict[str, object]) -> int | None:
+def _upsert_song(
+    conn,
+    data: dict[str, object],
+    *,
+    update_existing: bool,
+) -> int | None:
     title = text(data.get("song_title"))
     artist = text(data.get("song_artist"))
     full_song_path = text(data.get("full_song_path")) or None
@@ -46,15 +51,23 @@ def _upsert_song(conn, data: dict[str, object]) -> int | None:
     row_json = dumps_json(data)
     if existing:
         song_id = int(existing["id"])
-        conn.execute(
-            """
-            UPDATE songs
-            SET title=?, artist=?, full_song_path=?, qq_song_mid=?, row_json=?,
-                updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
-            """,
-            (title, artist, full_song_path, qq_song_mid, row_json, song_id),
-        )
+        if update_existing:
+            conn.execute(
+                """
+                UPDATE songs
+                SET title=?, artist=?, full_song_path=?, qq_song_mid=?,
+                    row_json=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (
+                    title,
+                    artist,
+                    full_song_path,
+                    qq_song_mid,
+                    row_json,
+                    song_id,
+                ),
+            )
         return song_id
 
     cur = conn.execute(
@@ -67,9 +80,16 @@ def _upsert_song(conn, data: dict[str, object]) -> int | None:
     return int(cur.lastrowid)
 
 
-def import_excel(input_path: Path, db_path: Path, annotator_id: str, replace: bool = False) -> dict[str, int]:
+def import_excel(
+    input_path: Path,
+    db_path: Path,
+    annotator_id: str,
+    replace: bool = False,
+    update_existing: bool = False,
+) -> dict[str, int]:
     init_db(db_path)
     df = pd.read_excel(input_path, keep_default_na=False)
+    update_existing = bool(update_existing or replace)
 
     imported = 0
     with __import__("intent_mgsv_pipeline.server.db", fromlist=["connect"]).connect(db_path) as conn:
@@ -85,7 +105,11 @@ def import_excel(input_path: Path, db_path: Path, annotator_id: str, replace: bo
             if not video_id:
                 continue
 
-            song_id = _upsert_song(conn, data)
+            song_id = _upsert_song(
+                conn,
+                data,
+                update_existing=update_existing,
+            )
             video_row = conn.execute("SELECT id FROM videos WHERE video_id=?", (video_id,)).fetchone()
             video_values = (
                 video_id,
@@ -105,16 +129,27 @@ def import_excel(input_path: Path, db_path: Path, annotator_id: str, replace: bo
             )
             if video_row:
                 db_video_id = int(video_row["id"])
-                conn.execute(
+                owner_annotation_exists = conn.execute(
                     """
-                    UPDATE videos
-                    SET douyin_video_id=?, video_path=?, clip_audio_path=?, creator_name=?,
-                        video_title=?, hashtags=?, full_desc=?, duration=?, width=?, height=?,
-                        total_frames=?, frame_rate=?, row_json=?, updated_at=CURRENT_TIMESTAMP
-                    WHERE id=?
+                    SELECT 1
+                    FROM annotations
+                    WHERE video_id=? AND annotator_id=?
                     """,
-                    video_values[1:] + (db_video_id,),
-                )
+                    (db_video_id, annotator_id),
+                ).fetchone()
+                if update_existing or owner_annotation_exists is None:
+                    conn.execute(
+                        """
+                        UPDATE videos
+                        SET douyin_video_id=?, video_path=?, clip_audio_path=?,
+                            creator_name=?, video_title=?, hashtags=?,
+                            full_desc=?, duration=?, width=?, height=?,
+                            total_frames=?, frame_rate=?, row_json=?,
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE id=?
+                        """,
+                        video_values[1:] + (db_video_id,),
+                    )
             else:
                 cur = conn.execute(
                     """
@@ -130,15 +165,8 @@ def import_excel(input_path: Path, db_path: Path, annotator_id: str, replace: bo
                 db_video_id = int(cur.lastrowid)
 
             status = "completed" if text(data.get("song_verified")).lower() in {"yes", "true", "1", "confirmed"} else "in_progress"
-            conn.execute(
+            conflict_action = (
                 """
-                INSERT INTO annotations(
-                    video_id, song_id, annotator_id, music_id, sync_level, music_start, music_end,
-                    shot_points, shot_points_3, shot_points_5, emotion, style, usage_scene,
-                    seg_scores_3, seg_scores_5, vocal_presence, genre, song_verified,
-                    recog_confidence, recog_note, match_score, status, row_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(video_id, annotator_id) DO UPDATE SET
                     song_id=excluded.song_id,
                     music_id=excluded.music_id,
@@ -162,6 +190,20 @@ def import_excel(input_path: Path, db_path: Path, annotator_id: str, replace: bo
                     status=excluded.status,
                     row_json=excluded.row_json,
                     updated_at=CURRENT_TIMESTAMP
+                """
+                if update_existing
+                else "ON CONFLICT(video_id, annotator_id) DO NOTHING"
+            )
+            conn.execute(
+                f"""
+                INSERT INTO annotations(
+                    video_id, song_id, annotator_id, music_id, sync_level, music_start, music_end,
+                    shot_points, shot_points_3, shot_points_5, emotion, style, usage_scene,
+                    seg_scores_3, seg_scores_5, vocal_presence, genre, song_verified,
+                    recog_confidence, recog_note, match_score, status, row_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                {conflict_action}
                 """,
                 (
                     db_video_id,
@@ -197,7 +239,12 @@ def import_excel(input_path: Path, db_path: Path, annotator_id: str, replace: bo
             actor=annotator_id,
             target_type="database",
             target_id=str(db_path),
-            payload={"input": str(input_path), "rows": imported, "replace": replace},
+            payload={
+                "input": str(input_path),
+                "rows": imported,
+                "replace": replace,
+                "update_existing": update_existing,
+            },
         )
 
     return {"rows": imported, "source_rows": len(df)}
@@ -209,9 +256,20 @@ def main() -> None:
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--annotator-id", default="owner")
     parser.add_argument("--replace", action="store_true")
+    parser.add_argument(
+        "--update-existing",
+        action="store_true",
+        help="Overwrite existing video/song/annotation rows. Default import is append-only.",
+    )
     args = parser.parse_args()
 
-    result = import_excel(Path(args.input), Path(args.db), args.annotator_id, args.replace)
+    result = import_excel(
+        Path(args.input),
+        Path(args.db),
+        args.annotator_id,
+        args.replace,
+        args.update_existing,
+    )
     print(f"Imported {result['rows']} rows from {result['source_rows']} source rows")
     print(f"Database: {Path(args.db).resolve()}")
 

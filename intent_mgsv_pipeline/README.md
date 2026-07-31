@@ -88,6 +88,31 @@
 - Beat Hit Rate
 - 后续扩展 Sync-aware Score、Intent Match Score
 
+### `music_preparation/`
+
+识曲后的歌曲准备流水线。
+
+当前模块：
+
+- `qqmusic.py`：QQ 搜索、候选校验、歌曲复用和 yt-dlp/aria2c 下载
+- `alignment.py`：对每个视频独立计算完整歌曲 offset
+- `genre.py`：生成可人工修改的 Genre 建议
+- `pipeline.py`：串联搜索、下载、复用、对齐和数据库状态
+
+机器结果只会进入 `ready_for_review` / `needs_review`，不会自动成为最终标签。
+
+### `server/`
+
+服务器数据库、多人任务领取、音乐核验和共识导出。
+
+当前入口：
+
+- `music_review_app.py`：人工最终核验歌曲、offset 和 Genre
+- `peer_annotation_app.py`：第二标注者独立复标五个主观字段
+- `export_consensus.py`：标签取并集、分段分数取平均
+
+第二标注者只能领取 owner 已完成且 `song_verified=Yes` 的样本。
+
 ### `docs/`
 
 路线图、任务蓝图和阶段记录。
@@ -97,6 +122,18 @@
 - `README_pipeline.md`
 
 ## 当前推荐运行顺序
+
+服务器新数据先运行：
+
+```bash
+python yt_dy_auto.py --retry-failed --download
+python -m intent_mgsv_pipeline.server.music_review_app --db "$MGSV_DB" --port 7862
+python -m intent_mgsv_pipeline.server.peer_annotation_app --db "$MGSV_DB" --port 7860
+```
+
+详细步骤见 `docs/README_server_operations.md`。
+
+数据清洗与 dataloader 验证运行：
 
 ```powershell
 E:\Users\30993\miniconda3\envs\mgsv_data\python.exe E:\MGSV_preprocessor\intent_mgsv_pipeline\schema\clean_dataset_schema.py

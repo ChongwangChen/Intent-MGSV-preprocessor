@@ -6,3 +6,4 @@ opencv-python-headless>=4.10,<5
 pandas>=2.2,<3
 requests>=2.31,<3
 scipy>=1.13,<1.16
+yt-dlp

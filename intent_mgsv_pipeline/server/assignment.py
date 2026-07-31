@@ -127,6 +127,68 @@ def get_annotation_record(
     return result
 
 
+def annotation_progress(
+    db_path: Path,
+    annotator_id: str,
+    owner_id: str = "owner",
+) -> dict[str, int]:
+    init_db(db_path)
+    require_completed_owner = int(annotator_id != owner_id)
+    eligibility = """
+        v.deleted_at IS NULL
+        AND (
+            ?=0 OR EXISTS (
+                SELECT 1
+                FROM annotations owner
+                WHERE owner.video_id=v.id
+                  AND owner.annotator_id=?
+                  AND owner.status='completed'
+                  AND LOWER(COALESCE(owner.song_verified, '')) IN
+                      ('yes', 'true', '1', 'confirmed')
+            )
+        )
+    """
+    with connect(db_path) as conn:
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM videos v WHERE {eligibility}",
+                (require_completed_owner, owner_id),
+            ).fetchone()[0]
+        )
+        completed = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM videos v
+                JOIN annotations a
+                  ON a.video_id=v.id AND a.annotator_id=?
+                WHERE {eligibility}
+                  AND a.status='completed'
+                """,
+                (annotator_id, require_completed_owner, owner_id),
+            ).fetchone()[0]
+        )
+        in_progress = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM videos v
+                JOIN annotations a
+                  ON a.video_id=v.id AND a.annotator_id=?
+                WHERE {eligibility}
+                  AND a.status='in_progress'
+                """,
+                (annotator_id, require_completed_owner, owner_id),
+            ).fetchone()[0]
+        )
+    return {
+        "completed": completed,
+        "in_progress": in_progress,
+        "total": total,
+        "remaining": max(0, total - completed),
+    }
+
+
 def claim_next(
     db_path: Path,
     annotator_id: str,
@@ -136,6 +198,7 @@ def claim_next(
     init_db(db_path)
     lease_until = _iso(_utc_now() + timedelta(minutes=lease_minutes))
     now = _iso(_utc_now())
+    require_completed_owner = int(annotator_id != owner_id)
 
     with connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -150,11 +213,22 @@ def claim_next(
               AND aa.status='in_progress'
               AND (aa.lease_until IS NULL OR aa.lease_until > ?)
               AND COALESCE(a.status, 'in_progress') != 'completed'
+              AND (
+                  ?=0 OR EXISTS (
+                      SELECT 1
+                      FROM annotations owner
+                      WHERE owner.video_id=v.id
+                        AND owner.annotator_id=?
+                        AND owner.status='completed'
+                        AND LOWER(COALESCE(owner.song_verified, '')) IN
+                            ('yes', 'true', '1', 'confirmed')
+                  )
+              )
               AND v.deleted_at IS NULL
             ORDER BY aa.updated_at DESC
             LIMIT 1
             """,
-            (annotator_id, now),
+            (annotator_id, now, require_completed_owner, owner_id),
         ).fetchone()
         if row is None:
             row = conn.execute(
@@ -173,10 +247,27 @@ def claim_next(
             WHERE v.deleted_at IS NULL
               AND aa.video_id IS NULL
               AND a.id IS NULL
+              AND (
+                  ?=0 OR EXISTS (
+                      SELECT 1
+                      FROM annotations owner
+                      WHERE owner.video_id=v.id
+                        AND owner.annotator_id=?
+                        AND owner.status='completed'
+                        AND LOWER(COALESCE(owner.song_verified, '')) IN
+                            ('yes', 'true', '1', 'confirmed')
+                  )
+              )
             ORDER BY v.id
             LIMIT 1
             """,
-            (annotator_id, now, annotator_id),
+            (
+                annotator_id,
+                now,
+                annotator_id,
+                require_completed_owner,
+                owner_id,
+            ),
             ).fetchone()
         if row is None:
             conn.commit()

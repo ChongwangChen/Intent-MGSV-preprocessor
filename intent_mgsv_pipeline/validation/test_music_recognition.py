@@ -12,6 +12,7 @@ from yt_dy_auto import (
     build_sample_starts,
     choose_candidate,
     should_process,
+    should_process_video,
 )
 
 
@@ -56,6 +57,27 @@ class MusicRecognitionTests(unittest.TestCase):
         }
         self.assertFalse(should_process(current, retry_failed=False))
         self.assertTrue(should_process(current, retry_failed=True))
+
+    def test_existing_dataset_video_is_skipped_by_default(self) -> None:
+        video_id = "already-annotated.mp4"
+        self.assertFalse(
+            should_process_video(
+                video_id,
+                None,
+                {video_id},
+                retry_failed=True,
+                include_existing_dataset=False,
+            )
+        )
+        self.assertTrue(
+            should_process_video(
+                video_id,
+                None,
+                {video_id},
+                retry_failed=True,
+                include_existing_dataset=True,
+            )
+        )
 
     def test_runtime_paths_follow_server_environment(self) -> None:
         root = Path("/data/intent_mgsv/repo")

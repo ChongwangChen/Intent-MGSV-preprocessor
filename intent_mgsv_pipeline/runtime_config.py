@@ -21,6 +21,7 @@ class RuntimePaths:
     full_music_dir: Path
     full_songs_dir: Path
     acr_tracking_excel: Path
+    master_excel: Path
     server_db: Path
     acr_config_file: Path
 
@@ -55,6 +56,10 @@ def load_runtime_paths() -> RuntimePaths:
         acr_tracking_excel=_path_from_env(
             "MGSV_ACR_TRACKING",
             output_dir / "acrcloud_tracking.xlsx",
+        ),
+        master_excel=_path_from_env(
+            "MGSV_EXCEL",
+            output_dir / "MGSV_Master_Dataset.xlsx",
         ),
         server_db=_path_from_env(
             "MGSV_DB",

@@ -323,6 +323,19 @@ def load_tracking(path: Path) -> pd.DataFrame:
     return pd.read_excel(path)
 
 
+def load_dataset_video_ids(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    data = pd.read_excel(path, usecols=lambda name: name == "video_id")
+    if "video_id" not in data.columns:
+        return set()
+    return {
+        str(value).strip()
+        for value in data["video_id"].dropna()
+        if str(value).strip()
+    }
+
+
 def should_process(
     previous: dict[str, Any] | None,
     *,
@@ -335,6 +348,19 @@ def should_process(
     if status in {"recognized", "downloaded", "reused", "verified"}:
         return False
     return retry_failed or version != RECOGNITION_VERSION
+
+
+def should_process_video(
+    video_id: str,
+    previous: dict[str, Any] | None,
+    dataset_video_ids: set[str],
+    *,
+    retry_failed: bool,
+    include_existing_dataset: bool,
+) -> bool:
+    if not include_existing_dataset and video_id in dataset_video_ids:
+        return False
+    return should_process(previous, retry_failed=retry_failed)
 
 
 def save_tracking(
@@ -401,6 +427,7 @@ def process_videos(
     sample_duration: float = 15.0,
     confidence_threshold: int = DEFAULT_CONFIDENCE_THRESHOLD,
     limit: int = 0,
+    include_existing_dataset: bool = False,
 ) -> dict[str, int]:
     config = load_acrcloud_config(paths)
     tracking_df = load_tracking(paths.acr_tracking_excel)
@@ -408,15 +435,27 @@ def process_videos(
     if not tracking_df.empty and "video_id" in tracking_df.columns:
         for record in tracking_df.to_dict("records"):
             previous_by_video[str(record.get("video_id", ""))] = record
+    dataset_video_ids = load_dataset_video_ids(paths.master_excel)
 
     new_records: list[dict[str, Any]] = []
-    counts = {"scanned": 0, "processed": 0, "recognized": 0, "failed": 0}
+    counts = {
+        "scanned": 0,
+        "skipped_dataset": 0,
+        "processed": 0,
+        "recognized": 0,
+        "failed": 0,
+    }
     for video_path in find_video_files(paths.douk_download_root):
         counts["scanned"] += 1
         video_id = video_path.name
-        if not should_process(
+        if not include_existing_dataset and video_id in dataset_video_ids:
+            counts["skipped_dataset"] += 1
+        if not should_process_video(
+            video_id,
             previous_by_video.get(video_id),
+            dataset_video_ids,
             retry_failed=retry_failed,
+            include_existing_dataset=include_existing_dataset,
         ):
             continue
         if limit and counts["processed"] >= limit:
@@ -493,6 +532,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CONFIDENCE_THRESHOLD,
     )
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--include-existing-dataset",
+        action="store_true",
+        help="Also recognize videos already present in MGSV_Master_Dataset.xlsx.",
+    )
     return parser
 
 
@@ -508,10 +552,12 @@ def main() -> None:
         sample_duration=max(5.0, args.sample_duration),
         confidence_threshold=max(0, min(100, args.confidence_threshold)),
         limit=max(0, args.limit),
+        include_existing_dataset=args.include_existing_dataset,
     )
     print(
         "Done: "
         f"scanned={counts['scanned']}, "
+        f"skipped_dataset={counts['skipped_dataset']}, "
         f"processed={counts['processed']}, "
         f"recognized={counts['recognized']}, "
         f"failed={counts['failed']}"

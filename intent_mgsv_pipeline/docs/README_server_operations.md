@@ -60,6 +60,7 @@ source config/server.env
 ```text
 MGSV_ROOT
 MGSV_OUTPUT_DIR
+MGSV_EXCEL
 MGSV_DOUK_VOLUME
 MGSV_SCAN_ROOT
 MGSV_DOUK_DATA_EXCEL
@@ -90,12 +91,19 @@ python yt_dy_auto.py --retry-failed
 
 默认行为：
 
+- 跳过已经存在于 `MGSV_Master_Dataset.xlsx` 的视频；
 - 在视频多个位置截取 15 秒音频；
 - 单个候选达到高分时提前结束；
 - 两个时间点识别为同一首歌时采用投票结果；
 - 保存歌名、歌手、置信度、采样位置和错误原因；
 - 旧算法留下的失败记录会自动使用新算法重试；
 - 当前版本失败后，只有增加 `--retry-failed` 才会再次请求，避免浪费额度。
+
+只有在明确需要重新识别历史数据时，才增加：
+
+```bash
+python yt_dy_auto.py --include-existing-dataset --retry-failed
+```
 
 结果保存在：
 

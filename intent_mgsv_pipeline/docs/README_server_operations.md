@@ -19,13 +19,17 @@ DouK 下载
 
 ## 一、服务器环境
 
-进入项目并激活 `mgsv_data`：
+进入项目并激活 `mgsv_data`。推荐使用与本地一致的 Python 3.10，
+不要把项目依赖安装到服务器 `base` 环境：
 
 ```bash
 cd /data/users/ccw/intent_mgsv/repo/MGSV_preprocessor
+conda create -n mgsv_data python=3.10 -y
 conda activate mgsv_data
 python -m pip install -r requirements_server.txt
 ```
+
+如果 `mgsv_data` 已经存在，只执行 `conda activate mgsv_data`，不要重复创建。
 
 服务器还需要系统命令：
 

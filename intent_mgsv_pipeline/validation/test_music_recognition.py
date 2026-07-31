@@ -59,7 +59,7 @@ class MusicRecognitionTests(unittest.TestCase):
 
     def test_runtime_paths_follow_server_environment(self) -> None:
         root = Path("/data/intent_mgsv/repo")
-        with patch.dict(os.environ, {"MGSV_ROOT": str(root)}, clear=False):
+        with patch.dict(os.environ, {"MGSV_ROOT": str(root)}, clear=True):
             paths = load_runtime_paths()
         resolved_root = root.resolve()
         self.assertEqual(paths.project_root, resolved_root)

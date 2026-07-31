@@ -13,6 +13,7 @@ import pandas as pd
 import librosa
 import numpy as np
 import tensorflow as tf
+from intent_mgsv_pipeline.runtime_config import PATHS
 
 # ==================== 【TensorFlow 专属消音器】 ====================
 tf.get_logger().setLevel('ERROR')
@@ -33,15 +34,15 @@ from scipy.ndimage import gaussian_filter1d
 
 # ==================== 【全局配置与模型初始化】 ====================
 
-DOUK_DOWNLOAD_ROOT   = r"E:/MGSV_preprocessor/DouK-Source/Volume/Download"            # 新源码版
-DOUK_DATA_EXCEL      = r"E:/MGSV_preprocessor/DouK-Source/Volume/Data/Download.xlsx"  # DouK 元数据
+DOUK_DOWNLOAD_ROOT   = str(PATHS.douk_download_root)
+DOUK_DATA_EXCEL      = str(PATHS.douk_data_excel)
 
 # 只扫描 DouK-Source 新下载目录
 SCAN_ROOTS = [DOUK_DOWNLOAD_ROOT]
 
-OUTPUT_DIR           = "./outputs"
-FULL_MUSIC_DIR       = "./outputs/full_music"   # yt_dy_auto.py 下载的完整原曲目录
-ACR_TRACKING_EXCEL   = "./outputs/acrcloud_tracking.xlsx"  # yt_dy_auto.py 生成的追踪表
+OUTPUT_DIR           = str(PATHS.output_dir)
+FULL_MUSIC_DIR       = str(PATHS.full_music_dir)
+ACR_TRACKING_EXCEL   = str(PATHS.acr_tracking_excel)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 限制 TF 显存
@@ -789,14 +790,26 @@ def main():
     # =========================================================
     # 📀 加载 yt_dy_auto.py 生成的原曲追踪表（若存在）
     # =========================================================
-    acr_index = {}   # {video_id: full_music_path_or_empty}
+    acr_index = {}
     if os.path.exists(ACR_TRACKING_EXCEL):
         acr_df = pd.read_excel(ACR_TRACKING_EXCEL)
         for _, row in acr_df.iterrows():
             vid = str(row.get('video_id', '')).strip()
-            fmp = str(row.get('full_music_path', '')).strip()
+            def _acr_text(name):
+                value = row.get(name, '')
+                return '' if pd.isna(value) else str(value).strip()
             if vid:
-                acr_index[vid] = fmp
+                acr_index[vid] = {
+                    'full_music_path': _acr_text('full_music_path'),
+                    'song_title': _acr_text('song_title'),
+                    'song_artist': _acr_text('song_artist'),
+                    'acr_confidence': _acr_text('acr_confidence'),
+                    'recognition_votes': _acr_text('recognition_votes'),
+                    'recognition_samples': _acr_text('recognition_samples'),
+                    'recognition_sample_summary': _acr_text('recognition_sample_summary'),
+                    'recognition_error': _acr_text('recognition_error'),
+                    'recognition_version': _acr_text('recognition_version'),
+                }
         print(f"📀 已加载原曲追踪表，共 {len(acr_index)} 条记录")
     else:
         print("📀 未找到原曲追踪表，将使用视频自带音乐进行对齐")
@@ -846,7 +859,8 @@ def main():
 
             # ---- 判断是否有完整原曲可用 ----
             # 优先级：ACR追踪表 > DouK 音乐CDN链接 > 视频自带音频
-            full_music_path = acr_index.get(v_file, '')
+            acr_info = acr_index.get(v_file, {})
+            full_music_path = acr_info.get('full_music_path', '')
             has_full_music  = bool(full_music_path and os.path.exists(full_music_path))
 
             # 若 ACR 追踪表没有，但 DouK 有 CDN 音乐链接，则直接下载
@@ -908,6 +922,16 @@ def main():
                 # —— 自动填充 ——
                 'video_id':                  v_file,
                 'music_id':                  a_file,
+                'song_title':                acr_info.get('song_title', ''),
+                'song_artist':               acr_info.get('song_artist', ''),
+                'song_verified':             '',
+                'acr_confidence':            acr_info.get('acr_confidence', ''),
+                'recog_confidence':          acr_info.get('acr_confidence', ''),
+                'recognition_votes':         acr_info.get('recognition_votes', ''),
+                'recognition_samples':       acr_info.get('recognition_samples', ''),
+                'recognition_sample_summary': acr_info.get('recognition_sample_summary', ''),
+                'recognition_error':         acr_info.get('recognition_error', ''),
+                'recognition_version':       acr_info.get('recognition_version', ''),
                 'douyin_video_id':           douk_meta['video_id'] if douk_meta else '',
                 'creator_name':              creator_val,
                 'video_title':               title_val,

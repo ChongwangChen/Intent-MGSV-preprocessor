@@ -9,6 +9,7 @@ venv/
 env/
 .env
 .env.*
+config/server.env
 .idea/
 .vscode/
 

@@ -10,7 +10,14 @@ from typing import Any
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from intent_mgsv_pipeline.server.db import DEFAULT_DB, connect, dumps_json, init_db, log_event
+from intent_mgsv_pipeline.server.db import (
+    DEFAULT_DB,
+    connect,
+    dumps_json,
+    init_db,
+    loads_json,
+    log_event,
+)
 
 
 def _utc_now() -> datetime:
@@ -21,7 +28,111 @@ def _iso(dt: datetime) -> str:
     return dt.replace(microsecond=0).isoformat()
 
 
-def claim_next(db_path: Path, annotator_id: str, lease_minutes: int = 60) -> dict[str, Any] | None:
+def _copy_owner_scaffold(
+    conn: Any,
+    video_db_id: int,
+    annotator_id: str,
+    owner_id: str,
+) -> None:
+    if annotator_id == owner_id:
+        return
+    exists = conn.execute(
+        "SELECT 1 FROM annotations WHERE video_id=? AND annotator_id=?",
+        (video_db_id, annotator_id),
+    ).fetchone()
+    if exists:
+        return
+    owner = conn.execute(
+        "SELECT * FROM annotations WHERE video_id=? AND annotator_id=?",
+        (video_db_id, owner_id),
+    ).fetchone()
+    if owner is None:
+        conn.execute(
+            """
+            INSERT INTO annotations(video_id, annotator_id, status, row_json)
+            VALUES (?, ?, 'in_progress', '{}')
+            """,
+            (video_db_id, annotator_id),
+        )
+        return
+    conn.execute(
+        """
+        INSERT INTO annotations(
+            video_id, song_id, annotator_id, music_id, sync_level,
+            music_start, music_end, shot_points, shot_points_3, shot_points_5,
+            vocal_presence, genre, song_verified, recog_confidence,
+            recog_note, match_score, status, row_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?)
+        """,
+        (
+            video_db_id,
+            owner["song_id"],
+            annotator_id,
+            owner["music_id"],
+            owner["sync_level"],
+            owner["music_start"],
+            owner["music_end"],
+            owner["shot_points"],
+            owner["shot_points_3"],
+            owner["shot_points_5"],
+            owner["vocal_presence"],
+            owner["genre"],
+            owner["song_verified"],
+            owner["recog_confidence"],
+            owner["recog_note"],
+            owner["match_score"],
+            owner["row_json"],
+        ),
+    )
+
+
+def get_annotation_record(
+    db_path: Path,
+    annotator_id: str,
+    video_id: str,
+) -> dict[str, Any] | None:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                v.video_id, v.video_path, v.clip_audio_path, v.creator_name,
+                v.video_title, v.hashtags, v.full_desc, v.duration,
+                v.row_json AS video_row_json,
+                a.sync_level, a.music_start, a.music_end, a.shot_points,
+                a.shot_points_3, a.shot_points_5, a.emotion, a.style,
+                a.usage_scene, a.seg_scores_3, a.seg_scores_5,
+                a.vocal_presence, a.genre, a.song_verified,
+                a.recog_confidence, a.recog_note, a.match_score,
+                a.status, a.row_json AS annotation_row_json,
+                s.title AS song_title, s.artist AS song_artist,
+                s.full_song_path
+            FROM videos v
+            JOIN annotations a ON a.video_id=v.id AND a.annotator_id=?
+            LEFT JOIN songs s ON s.id=a.song_id
+            WHERE v.video_id=? AND v.deleted_at IS NULL
+            """,
+            (annotator_id, video_id),
+        ).fetchone()
+    if row is None:
+        return None
+    result = loads_json(row["video_row_json"])
+    result.update(loads_json(row["annotation_row_json"]))
+    for key in row.keys():
+        if key not in {"video_row_json", "annotation_row_json"}:
+            value = row[key]
+            if value is not None:
+                result[key] = value
+    return result
+
+
+def claim_next(
+    db_path: Path,
+    annotator_id: str,
+    lease_minutes: int = 60,
+    owner_id: str = "owner",
+) -> dict[str, Any] | None:
     init_db(db_path)
     lease_until = _iso(_utc_now() + timedelta(minutes=lease_minutes))
     now = _iso(_utc_now())
@@ -31,9 +142,28 @@ def claim_next(db_path: Path, annotator_id: str, lease_minutes: int = 60) -> dic
         row = conn.execute(
             """
             SELECT v.id, v.video_id, v.video_title, v.creator_name
+            FROM annotation_assignments aa
+            JOIN videos v ON v.id=aa.video_id
+            LEFT JOIN annotations a
+              ON a.video_id=v.id AND a.annotator_id=aa.annotator_id
+            WHERE aa.annotator_id=?
+              AND aa.status='in_progress'
+              AND (aa.lease_until IS NULL OR aa.lease_until > ?)
+              AND COALESCE(a.status, 'in_progress') != 'completed'
+              AND v.deleted_at IS NULL
+            ORDER BY aa.updated_at DESC
+            LIMIT 1
+            """,
+            (annotator_id, now),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+            """
+            SELECT v.id, v.video_id, v.video_title, v.creator_name
             FROM videos v
             LEFT JOIN annotation_assignments aa
               ON aa.video_id = v.id
+             AND aa.annotator_id = ?
              AND aa.status = 'in_progress'
              AND (aa.lease_until IS NULL OR aa.lease_until > ?)
             LEFT JOIN annotations a
@@ -46,8 +176,8 @@ def claim_next(db_path: Path, annotator_id: str, lease_minutes: int = 60) -> dic
             ORDER BY v.id
             LIMIT 1
             """,
-            (now, annotator_id),
-        ).fetchone()
+            (annotator_id, now, annotator_id),
+            ).fetchone()
         if row is None:
             conn.commit()
             return None
@@ -63,6 +193,7 @@ def claim_next(db_path: Path, annotator_id: str, lease_minutes: int = 60) -> dic
             """,
             (row["id"], annotator_id, lease_until),
         )
+        _copy_owner_scaffold(conn, int(row["id"]), annotator_id, owner_id)
         log_event(
             conn,
             "claim_next",
@@ -72,7 +203,9 @@ def claim_next(db_path: Path, annotator_id: str, lease_minutes: int = 60) -> dic
             payload={"lease_until": lease_until},
         )
         conn.commit()
-        return dict(row) | {"lease_until": lease_until}
+        video_id = str(row["video_id"])
+    record = get_annotation_record(db_path, annotator_id, video_id)
+    return (record or dict(row)) | {"lease_until": lease_until}
 
 
 def release_assignment(db_path: Path, annotator_id: str, video_id: str, status: str = "completed") -> bool:
@@ -175,6 +308,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Claim or update server annotation assignments.")
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--annotator-id", required=True)
+    parser.add_argument("--owner-id", default="owner")
     sub = parser.add_subparsers(dest="command", required=True)
 
     claim = sub.add_parser("claim-next")
@@ -191,7 +325,12 @@ def main() -> None:
     args = parser.parse_args()
     db_path = Path(args.db)
     if args.command == "claim-next":
-        result = claim_next(db_path, args.annotator_id, args.lease_minutes)
+        result = claim_next(
+            db_path,
+            args.annotator_id,
+            args.lease_minutes,
+            args.owner_id,
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "release":
         print(release_assignment(db_path, args.annotator_id, args.video_id, args.status))

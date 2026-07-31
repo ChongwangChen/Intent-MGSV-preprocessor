@@ -35,6 +35,38 @@
 
 ## 二、当前最重要的结论
 
+### 当前阶段优先级
+
+根据当前项目推进意见，近期优先级应收紧为：
+
+```text
+第一优先级：继续扩大数据集并完成高质量标注
+第二优先级：保证标注工具和数据保存稳定
+第三优先级：先构建可靠 dataloader，对齐后续论文代码输入输出
+暂缓事项：复杂特征提取、模型训练流水线、模型结构大改
+```
+
+也就是说，当前代码侧最重要的不是继续堆特征或模型，而是让数据能被稳定、清晰、可复现地读出来。
+
+近期 Codex 不应优先推进：
+
+```text
+大规模特征提取优化
+复杂 multimodal baseline
+训练指标刷分
+新模型结构实验
+```
+
+近期 Codex 应优先推进：
+
+```text
+数据字段稳定
+标注流程稳定
+多人/服务器标注不丢数据
+dataloader 输出格式稳定
+样本可视化/抽查工具
+```
+
 多人服务器版不能继续让多个人同时写同一个 Excel。
 
 当前本地历史主表是：
@@ -316,6 +348,12 @@ E:\Users\30993\miniconda3\envs\mgsv_data\python.exe intent_mgsv_pipeline\trainin
 
 ```powershell
 E:\Users\30993\miniconda3\envs\mgsv_data\python.exe intent_mgsv_pipeline\server\import_excel_to_db.py --input outputs\MGSV_Master_Dataset.xlsx --db outputs\server\intent_mgsv.sqlite3 --annotator-id owner --replace
+```
+
+服务器下载后处理、多人复标和本地 Git 更新的实际操作见：
+
+```text
+intent_mgsv_pipeline/docs/README_server_operations.md
 ```
 
 ### 7. 从数据库导出 Excel

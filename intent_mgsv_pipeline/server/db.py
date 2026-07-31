@@ -5,9 +5,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 
+from intent_mgsv_pipeline.runtime_config import PATHS
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DB = PROJECT_ROOT / "outputs" / "server" / "intent_mgsv.sqlite3"
+
+PROJECT_ROOT = PATHS.project_root
+DEFAULT_DB = PATHS.server_db
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 
@@ -93,4 +95,3 @@ def log_event(
         """,
         (actor, event_type, target_type, "" if target_id is None else str(target_id), dumps_json(payload)),
     )
-

@@ -1,0 +1,8 @@
+gradio>=5.0
+librosa>=0.10
+numpy>=1.24
+openpyxl>=3.1
+opencv-python-headless>=4.8
+pandas>=2.0
+requests>=2.31
+scipy>=1.10

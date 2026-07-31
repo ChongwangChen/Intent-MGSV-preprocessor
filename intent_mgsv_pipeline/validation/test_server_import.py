@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from intent_mgsv_pipeline.server.db import connect
+from intent_mgsv_pipeline.server.backup_database import backup_database
 from intent_mgsv_pipeline.server.import_excel_to_db import import_excel
 
 
@@ -86,6 +87,15 @@ class ServerImportTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row["emotion"], "显式更新")
         self.assertEqual(row["music_start"], 3.0)
+
+    def test_sqlite_backup_is_readable(self) -> None:
+        self._write_source(emotion="欢乐", music_start=1.0)
+        import_excel(self.excel_path, self.db_path, "owner")
+        backup = backup_database(self.db_path, self.root / "backups")
+        self.assertTrue(backup.exists())
+        with connect(backup) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":

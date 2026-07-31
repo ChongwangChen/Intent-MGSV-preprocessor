@@ -73,6 +73,19 @@ def load_recognition_records(path: Path) -> list[dict[str, Any]]:
     return data.to_dict("records")
 
 
+def load_dataset_video_ids(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    data = pd.read_excel(path, usecols=lambda name: name == "video_id")
+    if "video_id" not in data.columns:
+        return set()
+    return {
+        str(value).strip()
+        for value in data["video_id"].dropna()
+        if str(value).strip()
+    }
+
+
 def _video_index(paths: RuntimePaths) -> dict[str, Path]:
     if not paths.douk_download_root.exists():
         return {}
@@ -546,6 +559,7 @@ def prepare_recognized_music(
     limit: int = 0,
     video_ids: Iterable[str] | None = None,
     fallback_sources: tuple[str, ...] | None = None,
+    include_existing_dataset: bool = False,
 ) -> dict[str, int]:
     init_db(db_path)
     records = load_recognition_records(paths.acr_tracking_excel)
@@ -560,8 +574,15 @@ def prepare_recognized_music(
             if source.strip()
         )
     video_index = _video_index(paths)
+    dataset_video_ids = (
+        set()
+        if include_existing_dataset
+        else load_dataset_video_ids(paths.master_excel)
+    )
     counts = {
         "scanned": 0,
+        "skipped_dataset": 0,
+        "missing_video": 0,
         "processed": 0,
         "ready_for_review": 0,
         "needs_review": 0,
@@ -574,11 +595,14 @@ def prepare_recognized_music(
             if requested is not None and video_id not in requested:
                 continue
             counts["scanned"] += 1
+            if video_id in dataset_video_ids:
+                counts["skipped_dataset"] += 1
+                continue
             if limit and counts["processed"] >= limit:
                 break
             video_path = _resolve_video_path(record, video_index, paths)
             if video_path is None:
-                counts["failed"] += 1
+                counts["missing_video"] += 1
                 continue
             print(f"\nPreparing music: {video_id}")
             result = prepare_record(

@@ -7,6 +7,9 @@ from unittest.mock import patch
 
 from intent_mgsv_pipeline.music_preparation.alignment import AlignmentResult
 from intent_mgsv_pipeline.music_preparation.pipeline import prepare_record
+from intent_mgsv_pipeline.music_preparation.pipeline import (
+    prepare_recognized_music,
+)
 from intent_mgsv_pipeline.music_preparation.qqmusic import QQMusicCandidate
 from intent_mgsv_pipeline.runtime_config import RuntimePaths
 from intent_mgsv_pipeline.server.assignment import claim_next
@@ -194,6 +197,35 @@ class MusicPreparationTests(unittest.TestCase):
             )
         claimed = claim_next(self.db_path, "annotator_b")
         self.assertEqual(claimed["video_id"], video.name)
+
+    def test_standalone_preparation_skips_existing_dataset_by_default(self) -> None:
+        video = self.paths.douk_download_root / "existing.mp4"
+        video.write_bytes(b"video")
+        import pandas as pd
+
+        pd.DataFrame(
+            [
+                {
+                    "video_id": video.name,
+                    "video_path": str(video),
+                    "song_title": "Song",
+                    "song_artist": "Artist",
+                    "status": "recognized",
+                }
+            ]
+        ).to_excel(self.paths.acr_tracking_excel, index=False)
+        pd.DataFrame([{"video_id": video.name}]).to_excel(
+            self.paths.master_excel,
+            index=False,
+        )
+        counts = prepare_recognized_music(
+            paths=self.paths,
+            db_path=self.db_path,
+            retry_failed=True,
+        )
+        self.assertEqual(counts["processed"], 0)
+        self.assertEqual(counts["skipped_dataset"], 1)
+        self.assertEqual(counts["failed"], 0)
 
 
 if __name__ == "__main__":

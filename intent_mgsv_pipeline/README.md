@@ -108,8 +108,11 @@
 当前入口：
 
 - `music_review_app.py`：人工最终核验歌曲、offset 和 Genre
+- `owner_annotation_app.py`：数据库版主标注页面
 - `peer_annotation_app.py`：第二标注者独立复标五个主观字段
 - `export_consensus.py`：标签取并集、分段分数取平均
+- `backup_database.py`：SQLite 一致性备份
+- `manage_annotation_services.sh`：一键管理三个标注网站
 
 第二标注者只能领取 owner 已完成且 `song_verified=Yes` 的样本。
 
@@ -128,7 +131,8 @@
 ```bash
 python yt_dy_auto.py --retry-failed --download
 python -m intent_mgsv_pipeline.server.music_review_app --db "$MGSV_DB" --port 7862
-python -m intent_mgsv_pipeline.server.peer_annotation_app --db "$MGSV_DB" --port 7860
+python -m intent_mgsv_pipeline.server.owner_annotation_app --db "$MGSV_DB" --port 7860
+python -m intent_mgsv_pipeline.server.peer_annotation_app --db "$MGSV_DB" --port 7861
 ```
 
 详细步骤见 `docs/README_server_operations.md`。

@@ -16,6 +16,11 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument(
+        "--include-existing-dataset",
+        action="store_true",
+        help="Also prepare videos already present in MGSV_Master_Dataset.xlsx.",
+    )
+    parser.add_argument(
         "--fallback-sources",
         default=None,
         help="Comma-separated fallback sources: youtube,bilibili. Empty disables fallback.",
@@ -34,6 +39,7 @@ def main() -> None:
         retry_failed=args.retry_failed,
         limit=max(0, args.limit),
         fallback_sources=fallback_sources,
+        include_existing_dataset=args.include_existing_dataset,
     )
     print(
         "Done: "

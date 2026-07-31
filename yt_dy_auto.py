@@ -543,6 +543,7 @@ def process_videos(
             retry_failed=retry_failed,
             limit=max(0, limit),
             video_ids=preparation_video_ids,
+            include_existing_dataset=include_existing_dataset,
         )
         print(
             "\nMusic preparation: "

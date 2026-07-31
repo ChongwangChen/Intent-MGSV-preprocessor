@@ -172,6 +172,10 @@ python yt_dy_auto.py --retry-failed --download
 python prepare_music_pipeline.py --retry-failed
 ```
 
+该命令默认跳过已经进入 `MGSV_Master_Dataset.xlsx` 的历史数据。只有明确需要重做
+历史歌曲时才增加 `--include-existing-dataset`。统计中的 `missing_video` 表示追踪表
+有记录但服务器找不到对应媒体，不再混入真实的下载/对齐失败数。
+
 自动结果保存在数据库 `music_preparations` 表，常见状态为：
 
 ```text
@@ -280,21 +284,62 @@ python intent_mgsv_pipeline/server/import_excel_to_db.py \
 
 正常多人标注流程不要使用这个参数。
 
-## 六、启动多人复标页面
+## 六、启动数据库版标注网站
 
-启动服务器网页：
+目前服务器提供三个相互衔接的网站：
+
+```text
+7862 音乐核验：确认歌曲、offset、Genre
+7860 owner 主标注：sync、分镜点、vocal、意图标签、分段评分
+7861 peer 复标：emotion、style、usage_scene、两套分段评分
+```
+
+### 6.1 数据库备份
+
+每次批量导入或开始一轮多人标注前执行：
 
 ```bash
-python -m intent_mgsv_pipeline.server.peer_annotation_app \
+python -m intent_mgsv_pipeline.server.backup_database \
   --db "$MGSV_DB" \
+  --out-dir outputs/server/backups
+```
+
+它使用 SQLite 在线备份接口，在 WAL 模式下也能生成一致快照。
+
+### 6.2 owner 主标注页面
+
+```bash
+python -m intent_mgsv_pipeline.server.owner_annotation_app \
+  --db "$MGSV_DB" \
+  --owner-id owner \
   --host 0.0.0.0 \
   --port 7860
 ```
 
-推荐放在 `tmux` 中运行：
+owner 页面只领取已经完成音乐核验的记录。必填项包括：
+
+```text
+sync_level
+vocal_presence
+genre
+emotion
+style
+usage_scene
+对应可见分段的全部评分
+```
+
+卡点视频还必须有方案 A 分镜点。页面支持输入后自动保存、保存并继续、连续返回
+历史已完成记录；返回前会先保存当前表单。将历史记录改成不完整状态时，
+`completed` 会自动撤销，防止遗漏标签仍被计为完成。
+
+### 6.3 第二标注者复标页面
 
 ```bash
-tmux new -s mgsv-annotation
+python -m intent_mgsv_pipeline.server.peer_annotation_app \
+  --db "$MGSV_DB" \
+  --owner-id owner \
+  --host 0.0.0.0 \
+  --port 7861
 ```
 
 页面要求每位同学输入自己的稳定 ID，例如：
@@ -335,6 +380,34 @@ song_verified
 页面会显示当前标注者自己的 `已完成/可领取总数`。第二标注者只能领取
 `owner.status=completed` 且 `owner.song_verified=Yes` 的样本，所以机器任务刚结束、
 但尚未人工核验的歌曲不会混入复标任务。
+
+### 6.4 一键管理三个网站
+
+推荐使用内置 tmux 管理脚本：
+
+```bash
+chmod +x intent_mgsv_pipeline/server/manage_annotation_services.sh
+
+intent_mgsv_pipeline/server/manage_annotation_services.sh start
+intent_mgsv_pipeline/server/manage_annotation_services.sh status
+```
+
+日志位于：
+
+```text
+outputs/server/logs/mgsv-owner.log
+outputs/server/logs/mgsv-peer.log
+outputs/server/logs/mgsv-music-review.log
+```
+
+重启和停止：
+
+```bash
+intent_mgsv_pipeline/server/manage_annotation_services.sh restart
+intent_mgsv_pipeline/server/manage_annotation_services.sh stop
+```
+
+三个页面同时运行时仍只写各自的数据库行，不会共同改写 Excel。
 
 ## 七、导出多人标注共识
 

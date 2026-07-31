@@ -7,7 +7,11 @@ from typing import Any
 import gradio as gr
 
 from intent_mgsv_pipeline.runtime_config import PATHS
-from intent_mgsv_pipeline.server.assignment import annotation_progress, claim_next
+from intent_mgsv_pipeline.server.assignment import (
+    annotation_progress,
+    claim_next,
+    get_previous_annotation,
+)
 from intent_mgsv_pipeline.server.db import DEFAULT_DB
 from intent_mgsv_pipeline.server.peer_annotation import (
     SCORE_OPTIONS,
@@ -158,6 +162,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 )
 
         with gr.Row():
+            previous_button = gr.Button("上一条")
             save_button = gr.Button("保存当前修改")
             next_button = gr.Button("保存并进入下一条", variant="primary")
 
@@ -174,6 +179,29 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
             *score_components,
         ]
 
+        def present(
+            annotator_id: str,
+            row: dict[str, Any],
+            message: str = "",
+        ) -> tuple[Any, ...]:
+            progress = annotation_progress(db_path, annotator_id, owner_id)
+            progress_text = (
+                f"进度：{progress['completed']}/{progress['total']}，"
+                f"剩余 {progress['remaining']} 条"
+            )
+            video_id = str(row["video_id"])
+            return (
+                annotator_id,
+                video_id,
+                _resolve_video(row),
+                _metadata(row),
+                message or f"正在标注：{video_id}  \n{progress_text}",
+                _split_values(row.get("emotion")),
+                _split_values(row.get("style")),
+                _split_values(row.get("usage_scene")),
+                *_score_updates(row),
+            )
+
         def load_next(annotator_id: str) -> tuple[Any, ...]:
             annotator_id = str(annotator_id or "").strip()
             if not annotator_id:
@@ -189,12 +217,12 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                     *(gr.update(visible=False, value=None) for _ in score_components),
                 )
             row = claim_next(db_path, annotator_id, owner_id=owner_id)
-            progress = annotation_progress(db_path, annotator_id, owner_id)
-            progress_text = (
-                f"进度：{progress['completed']}/{progress['total']}，"
-                f"剩余 {progress['remaining']} 条"
-            )
             if row is None:
+                progress = annotation_progress(db_path, annotator_id, owner_id)
+                progress_text = (
+                    f"进度：{progress['completed']}/{progress['total']}，"
+                    f"剩余 {progress['remaining']} 条"
+                )
                 return (
                     annotator_id,
                     "",
@@ -206,18 +234,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                     [],
                     *(gr.update(visible=False, value=None) for _ in score_components),
                 )
-            video_id = str(row["video_id"])
-            return (
-                annotator_id,
-                video_id,
-                _resolve_video(row),
-                _metadata(row),
-                f"正在标注：{video_id}  \n{progress_text}",
-                _split_values(row.get("emotion")),
-                _split_values(row.get("style")),
-                _split_values(row.get("usage_scene")),
-                *_score_updates(row),
-            )
+            return present(annotator_id, row)
 
         def save_current(
             annotator_id: str,
@@ -242,6 +259,49 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 seg_scores_5=values_b,
             )
             return "当前修改已保存。" if saved else "保存失败，请查看服务器日志。"
+
+        def previous(
+            annotator_id: str,
+            video_id: str,
+            emotion_values: list[str],
+            style_values: list[str],
+            scene_values: list[str],
+            *score_values: Any,
+        ) -> tuple[Any, ...]:
+            if not annotator_id:
+                return load_next(annotator_id)
+            if video_id:
+                save_current(
+                    annotator_id,
+                    video_id,
+                    emotion_values,
+                    style_values,
+                    scene_values,
+                    *score_values,
+                )
+            row = get_previous_annotation(
+                db_path,
+                annotator_id,
+                video_id,
+            )
+            if row is None:
+                current = claim_next(
+                    db_path,
+                    annotator_id,
+                    owner_id=owner_id,
+                )
+                if current is None:
+                    return load_next(annotator_id)
+                return present(
+                    annotator_id,
+                    current,
+                    "没有更早的已完成标注，已保留当前样本。",
+                )
+            return present(
+                annotator_id,
+                row,
+                "正在修改历史标注；切换前已自动保存当前表单。",
+            )
 
         def complete_and_next(
             annotator_id: str,
@@ -269,9 +329,11 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 row = claim_next(db_path, annotator_id, owner_id=owner_id)
                 if row is None:
                     return load_next(annotator_id)
-                result = list(load_next(annotator_id))
-                result[4] = "必填项未完成：" + "、".join(missing)
-                return tuple(result)
+                return present(
+                    annotator_id,
+                    row,
+                    "必填项未完成：" + "、".join(missing),
+                )
             return load_next(annotator_id)
 
         form_inputs = [
@@ -288,11 +350,27 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
             inputs=form_inputs,
             outputs=[status],
         )
+        previous_button.click(
+            previous,
+            inputs=form_inputs,
+            outputs=outputs,
+        )
         next_button.click(
             complete_and_next,
             inputs=form_inputs,
             outputs=outputs,
         )
+        for component in [
+            emotion,
+            style,
+            usage_scene,
+            *score_components,
+        ]:
+            component.input(
+                save_current,
+                inputs=form_inputs,
+                outputs=status,
+            )
     return app
 
 

@@ -97,7 +97,8 @@ def get_annotation_record(
         row = conn.execute(
             """
             SELECT
-                v.video_id, v.video_path, v.clip_audio_path, v.creator_name,
+                v.id AS video_db_id, v.video_id, v.video_path,
+                v.clip_audio_path, v.creator_name,
                 v.video_title, v.hashtags, v.full_desc, v.duration,
                 v.row_json AS video_row_json,
                 a.sync_level, a.music_start, a.music_end, a.shot_points,
@@ -125,6 +126,37 @@ def get_annotation_record(
             if value is not None:
                 result[key] = value
     return result
+
+
+def get_previous_annotation(
+    db_path: Path,
+    annotator_id: str,
+    before_video_id: str,
+) -> dict[str, Any] | None:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        current = conn.execute(
+            "SELECT id FROM videos WHERE video_id=? AND deleted_at IS NULL",
+            (before_video_id,),
+        ).fetchone()
+        before_id = int(current["id"]) if current else 2**63 - 1
+        row = conn.execute(
+            """
+            SELECT v.video_id
+            FROM videos v
+            JOIN annotations a
+              ON a.video_id=v.id AND a.annotator_id=?
+            WHERE v.deleted_at IS NULL
+              AND v.id < ?
+              AND a.status='completed'
+            ORDER BY v.id DESC
+            LIMIT 1
+            """,
+            (annotator_id, before_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return get_annotation_record(db_path, annotator_id, str(row["video_id"]))
 
 
 def annotation_progress(
@@ -187,6 +219,130 @@ def annotation_progress(
         "total": total,
         "remaining": max(0, total - completed),
     }
+
+
+def owner_annotation_progress(
+    db_path: Path,
+    owner_id: str = "owner",
+) -> dict[str, int]:
+    init_db(db_path)
+    verified = """
+        v.deleted_at IS NULL
+        AND LOWER(COALESCE(a.song_verified, '')) IN
+            ('yes', 'true', '1', 'confirmed')
+    """
+    with connect(db_path) as conn:
+        total = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM videos v
+                JOIN annotations a
+                  ON a.video_id=v.id AND a.annotator_id=?
+                WHERE {verified}
+                """,
+                (owner_id,),
+            ).fetchone()[0]
+        )
+        completed = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM videos v
+                JOIN annotations a
+                  ON a.video_id=v.id AND a.annotator_id=?
+                WHERE {verified} AND a.status='completed'
+                """,
+                (owner_id,),
+            ).fetchone()[0]
+        )
+    return {
+        "completed": completed,
+        "total": total,
+        "remaining": max(0, total - completed),
+    }
+
+
+def claim_next_owner(
+    db_path: Path,
+    owner_id: str = "owner",
+    lease_minutes: int = 120,
+) -> dict[str, Any] | None:
+    init_db(db_path)
+    lease_until = _iso(_utc_now() + timedelta(minutes=lease_minutes))
+    now = _iso(_utc_now())
+    with connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT v.id, v.video_id
+            FROM annotation_assignments aa
+            JOIN videos v ON v.id=aa.video_id
+            JOIN annotations a
+              ON a.video_id=v.id AND a.annotator_id=aa.annotator_id
+            WHERE aa.annotator_id=?
+              AND aa.status='in_progress'
+              AND (aa.lease_until IS NULL OR aa.lease_until > ?)
+              AND a.status!='completed'
+              AND LOWER(COALESCE(a.song_verified, '')) IN
+                  ('yes', 'true', '1', 'confirmed')
+              AND v.deleted_at IS NULL
+            ORDER BY aa.updated_at DESC
+            LIMIT 1
+            """,
+            (owner_id, now),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                """
+                SELECT v.id, v.video_id
+                FROM videos v
+                JOIN annotations a
+                  ON a.video_id=v.id AND a.annotator_id=?
+                LEFT JOIN annotation_assignments aa
+                  ON aa.video_id=v.id AND aa.annotator_id=?
+                WHERE v.deleted_at IS NULL
+                  AND a.status!='completed'
+                  AND LOWER(COALESCE(a.song_verified, '')) IN
+                      ('yes', 'true', '1', 'confirmed')
+                  AND (
+                      aa.video_id IS NULL
+                      OR aa.status!='in_progress'
+                      OR aa.lease_until IS NULL
+                      OR aa.lease_until <= ?
+                  )
+                ORDER BY v.id
+                LIMIT 1
+                """,
+                (owner_id, owner_id, now),
+            ).fetchone()
+        if row is None:
+            conn.commit()
+            return None
+        conn.execute(
+            """
+            INSERT INTO annotation_assignments(
+                video_id, annotator_id, status, lease_until
+            )
+            VALUES (?, ?, 'in_progress', ?)
+            ON CONFLICT(video_id, annotator_id) DO UPDATE SET
+                status='in_progress',
+                lease_until=excluded.lease_until,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (row["id"], owner_id, lease_until),
+        )
+        log_event(
+            conn,
+            "claim_next_owner",
+            actor=owner_id,
+            target_type="video",
+            target_id=row["video_id"],
+            payload={"lease_until": lease_until},
+        )
+        conn.commit()
+        video_id = str(row["video_id"])
+    return get_annotation_record(db_path, owner_id, video_id)
 
 
 def claim_next(

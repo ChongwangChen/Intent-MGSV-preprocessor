@@ -10,6 +10,7 @@ from intent_mgsv_pipeline.server.db import connect
 from intent_mgsv_pipeline.server.backup_database import backup_database
 from intent_mgsv_pipeline.server.import_excel_to_db import import_excel
 from intent_mgsv_pipeline.server.db import init_db
+from intent_mgsv_pipeline.server.media_paths import browser_safe_video_path
 from intent_mgsv_pipeline.server.repair_video_paths import repair_video_paths
 
 
@@ -137,6 +138,19 @@ class ServerImportTests(unittest.TestCase):
                 "SELECT video_path FROM videos WHERE video_id='video-1.mp4'"
             ).fetchone()
         self.assertEqual(Path(row["video_path"]), video.resolve())
+
+    def test_browser_safe_video_path_avoids_url_reserved_filename(self) -> None:
+        source = self.root / "视频 #卡点.mp4"
+        source.write_bytes(b"video")
+        alias = browser_safe_video_path(
+            source,
+            cache_dir=self.root / "aliases",
+        )
+
+        self.assertTrue(alias.is_file())
+        self.assertNotIn("#", alias.name)
+        self.assertTrue(alias.name.isascii())
+        self.assertEqual(alias.read_bytes(), source.read_bytes())
 
     def test_sqlite_backup_is_readable(self) -> None:
         self._write_source(emotion="欢乐", music_start=1.0)

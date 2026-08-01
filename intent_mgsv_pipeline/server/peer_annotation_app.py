@@ -13,6 +13,7 @@ from intent_mgsv_pipeline.server.assignment import (
     get_previous_annotation,
 )
 from intent_mgsv_pipeline.server.db import DEFAULT_DB
+from intent_mgsv_pipeline.server.media_paths import browser_safe_video_path
 from intent_mgsv_pipeline.server.peer_annotation import (
     SCORE_OPTIONS,
     complete_peer_annotation,
@@ -77,8 +78,9 @@ def _resolve_video(row: dict[str, Any]) -> str | None:
         if not path.is_absolute():
             path = PATHS.project_root / path
         if path.exists():
-            return str(path)
-    return VIDEO_INDEX.get(str(row.get("video_id", "") or ""))
+            return str(browser_safe_video_path(path))
+    fallback = VIDEO_INDEX.get(str(row.get("video_id", "") or ""))
+    return str(browser_safe_video_path(Path(fallback))) if fallback else None
 
 
 def _score_updates(row: dict[str, Any]) -> tuple[Any, ...]:

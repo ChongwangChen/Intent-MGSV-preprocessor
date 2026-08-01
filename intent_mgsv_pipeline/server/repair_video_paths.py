@@ -40,6 +40,7 @@ def repair_video_paths(
         "rows": 0,
         "already_valid": 0,
         "repaired": 0,
+        "equivalent_duplicates": 0,
         "missing": 0,
         "ambiguous": 0,
     }
@@ -69,8 +70,12 @@ def repair_video_paths(
                 counts["missing"] += 1
                 continue
             if len(matches) > 1:
-                counts["ambiguous"] += 1
-                continue
+                sizes = {match.stat().st_size for match in matches}
+                if len(sizes) != 1:
+                    counts["ambiguous"] += 1
+                    continue
+                counts["equivalent_duplicates"] += 1
+                matches.sort(key=lambda path: (len(path.parts), str(path)))
 
             counts["repaired"] += 1
             if not dry_run:

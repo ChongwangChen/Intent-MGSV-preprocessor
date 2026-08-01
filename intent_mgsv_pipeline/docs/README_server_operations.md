@@ -246,9 +246,29 @@ python -m intent_mgsv_pipeline.server.music_review_app \
   --port 7862
 ```
 
-页面同时展示原视频和按自动 offset 裁出的完整歌曲片段。核验者需要确认歌曲、
-片段位置和 Genre；必要时直接修改 offset 或 Genre，然后点击
+页面同时展示原视频、完整歌曲和按自动 offset 裁出的短预览。完整歌曲播放器会
+显示整首时长，并在加载后自动定位到 offset；例如歌曲总长 4:30、offset=50s，
+播放器会定位到 50s，核验者再点击播放即可与视频原声对比。修改 offset 后可以
+点击“定位到 offset”重新跳转。确认歌曲、片段位置和 Genre 后，点击
 “歌曲和对齐均正确”。
+
+页面会直接显示完整歌曲的物理路径。自动下载通常保存在：
+
+```text
+outputs/full_songs/
+```
+
+兼容旧数据时也可能引用 `outputs/full_music/`。数据库映射为：
+
+```text
+videos.id
+  -> music_preparations.video_id
+  -> music_preparations.song_id
+  -> songs.id / songs.full_song_path
+
+人工核验 -> song_reviews
+确认结果 -> annotations.song_id / music_start / music_end / genre
+```
 
 只有完成最终核验，系统才会写入：
 
@@ -359,7 +379,18 @@ python -m intent_mgsv_pipeline.server.owner_annotation_app \
   --port 7860
 ```
 
-owner 页面只领取已经完成音乐核验的记录。必填项包括：
+owner 页面只领取已经完成音乐核验的记录，页面操作顺序为：
+
+```text
+1. 先选择是否卡点
+2. 按 auto.py 已生成的分镜点自动划分视频片段
+3. 点击每个片段按钮试听，并逐段打 1-5 分
+4. 标注 vocal_presence 与 genre
+5. 在 Emotion / Style / Usage Scene 三大类下继续按细分类选择
+```
+
+片段范围始终采用视频自己的时间轴（从 0 秒开始），不会使用完整歌曲的 offset。
+必填项包括：
 
 ```text
 sync_level
@@ -394,7 +425,9 @@ annotator_c
 
 不要把 `owner` 作为第二标注者 ID。
 
-当前复标页面只要求重新标注：
+复标页面继承 owner 已确定的卡点状态和分镜点，同样支持逐段点击播放。标签恢复为
+三大类 Tab，每一大类再按正负情绪、视觉/剪辑风格、日常/创作场景等细分，避免
+所有选项混在一个长列表中。当前复标页面只要求重新标注：
 
 ```text
 emotion

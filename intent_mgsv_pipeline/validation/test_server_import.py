@@ -10,7 +10,10 @@ from intent_mgsv_pipeline.server.db import connect
 from intent_mgsv_pipeline.server.backup_database import backup_database
 from intent_mgsv_pipeline.server.import_excel_to_db import import_excel
 from intent_mgsv_pipeline.server.db import init_db
-from intent_mgsv_pipeline.server.media_paths import browser_safe_video_path
+from intent_mgsv_pipeline.server.media_paths import (
+    browser_safe_audio_path,
+    browser_safe_video_path,
+)
 from intent_mgsv_pipeline.server.repair_video_paths import repair_video_paths
 
 
@@ -150,6 +153,19 @@ class ServerImportTests(unittest.TestCase):
         self.assertTrue(alias.is_file())
         self.assertNotIn("#", alias.name)
         self.assertTrue(alias.name.isascii())
+        self.assertEqual(alias.read_bytes(), source.read_bytes())
+
+    def test_browser_safe_audio_path_preserves_full_song(self) -> None:
+        source = self.root / "完整歌曲 #1.mp3"
+        source.write_bytes(b"audio")
+        alias = browser_safe_audio_path(
+            source,
+            cache_dir=self.root / "audio-aliases",
+        )
+
+        self.assertTrue(alias.is_file())
+        self.assertTrue(alias.name.isascii())
+        self.assertEqual(alias.suffix, ".mp3")
         self.assertEqual(alias.read_bytes(), source.read_bytes())
 
     def test_sqlite_backup_is_readable(self) -> None:

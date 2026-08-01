@@ -8,10 +8,11 @@ from pathlib import Path
 from intent_mgsv_pipeline.runtime_config import PATHS
 
 
-def browser_safe_video_path(
+def browser_safe_media_path(
     source: Path,
     *,
     cache_dir: Path | None = None,
+    default_suffix: str = ".bin",
 ) -> Path:
     """Return an ASCII-only alias so URL-reserved filename characters are safe."""
     source = source.resolve()
@@ -26,8 +27,8 @@ def browser_safe_video_path(
         )
     )
     digest = hashlib.sha256(fingerprint).hexdigest()[:24]
-    suffix = source.suffix.lower() if source.suffix else ".mp4"
-    cache_dir = cache_dir or PATHS.output_dir / "server" / "video_aliases"
+    suffix = source.suffix.lower() if source.suffix else default_suffix
+    cache_dir = cache_dir or PATHS.output_dir / "server" / "media_aliases"
     cache_dir.mkdir(parents=True, exist_ok=True)
     alias = cache_dir / f"{digest}{suffix}"
 
@@ -46,3 +47,26 @@ def browser_safe_video_path(
             shutil.copy2(source, alias)
     return alias
 
+
+def browser_safe_video_path(
+    source: Path,
+    *,
+    cache_dir: Path | None = None,
+) -> Path:
+    return browser_safe_media_path(
+        source,
+        cache_dir=cache_dir or PATHS.output_dir / "server" / "video_aliases",
+        default_suffix=".mp4",
+    )
+
+
+def browser_safe_audio_path(
+    source: Path,
+    *,
+    cache_dir: Path | None = None,
+) -> Path:
+    return browser_safe_media_path(
+        source,
+        cache_dir=cache_dir or PATHS.output_dir / "server" / "audio_aliases",
+        default_suffix=".mp3",
+    )

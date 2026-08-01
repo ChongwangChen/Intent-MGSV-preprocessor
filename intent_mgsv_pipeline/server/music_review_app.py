@@ -9,6 +9,7 @@ import gradio as gr
 from intent_mgsv_pipeline.music_preparation.genre import GENRE_OPTIONS
 from intent_mgsv_pipeline.runtime_config import PATHS
 from intent_mgsv_pipeline.server.db import DEFAULT_DB
+from intent_mgsv_pipeline.server.media_paths import browser_safe_audio_path
 from intent_mgsv_pipeline.server.music_review import (
     build_aligned_preview,
     claim_next_music_review,
@@ -19,18 +20,60 @@ from intent_mgsv_pipeline.server.music_review import (
 from intent_mgsv_pipeline.server.peer_annotation_app import _resolve_video
 
 
+def _number(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_full_song(row: dict[str, Any]) -> str | None:
+    raw = str(row.get("full_song_path", "") or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = PATHS.project_root / path
+    if not path.is_file():
+        return None
+    return str(browser_safe_audio_path(path))
+
+
+def _full_song_update(row: dict[str, Any]) -> Any:
+    path = _resolve_full_song(row)
+    offset = _number(
+        row.get("corrected_offset")
+        if row.get("corrected_offset") is not None
+        else row.get("song_offset")
+    )
+    if not path:
+        return gr.update(value=None, playback_position=0)
+    return gr.update(value=path, playback_position=max(0.0, offset))
+
+
 def _metadata(row: dict[str, Any]) -> str:
+    title = row.get("recognized_title") or "未知歌曲"
+    artist = row.get("recognized_artist") or "未知歌手"
+    offset = _number(
+        row.get("corrected_offset")
+        if row.get("corrected_offset") is not None
+        else row.get("song_offset")
+    )
+    full_song_path = row.get("full_song_path") or "未建立"
     return (
         f"### {row.get('video_title') or row.get('video_id')}\n"
-        f"识曲：{row.get('recognized_title') or '未知'} - "
-        f"{row.get('recognized_artist') or '未知歌手'}  \n"
-        f"识曲置信度：{row.get('recognition_confidence') or 0}，"
+        f"识曲结果：**{title} - {artist}**  \n"
+        f"识曲置信度：{row.get('recognition_confidence') or 0}；"
         f"多窗口票数：{row.get('recognition_votes') or 0}  \n"
-        f"下载来源：{row.get('download_source') or '未知'}，"
+        f"完整歌曲 offset：**{offset:.3f}s**；"
+        f"自动对齐分：{row.get('match_score') or 0}  \n"
+        f"下载来源：{row.get('download_source') or '未知'}；"
         f"QQ song_mid：{row.get('qq_song_mid') or '无'}  \n"
-        f"对齐分：{row.get('match_score') or 0}，"
-        f"机器状态：{row.get('preparation_status') or '未知'}  \n"
-        f"视频中音乐开始：{row.get('video_audio_start') or 0}s"
+        f"完整歌曲文件：`{full_song_path}`  \n"
+        f"数据库映射：`videos.id={row.get('video_db_id')}`"
+        f" → music_preparations.video_id；"
+        f"`music_preparations.song_id={row.get('song_id')}`"
+        f" → songs.id；核验写入 `song_reviews`，确认后同步到 `annotations`。"
     )
 
 
@@ -39,6 +82,7 @@ def _empty(message: str, reviewer_id: str = "") -> tuple[Any, ...]:
         reviewer_id,
         "",
         None,
+        gr.update(value=None, playback_position=0),
         None,
         "",
         message,
@@ -52,23 +96,38 @@ def build_app(
     db_path: Path,
     owner_id: str = "owner",
 ) -> gr.Blocks:
-    with gr.Blocks(title="Intent-MGSV 音乐最终核验") as app:
+    with gr.Blocks(title="Intent-MGSV 音乐核验") as app:
         reviewer_state = gr.State("")
         video_id_state = gr.State("")
 
-        gr.Markdown("# Intent-MGSV 音乐与自动对齐最终核验")
+        gr.Markdown("# Intent-MGSV 音乐与自动对齐核验")
         with gr.Row():
             reviewer_input = gr.Textbox(label="核验者 ID", value=owner_id)
             start_button = gr.Button("开始 / 继续", variant="primary")
 
-        status = gr.Markdown("请输入核验者 ID 后开始。")
+        status = gr.Markdown("输入核验者 ID 后开始。")
         metadata = gr.Markdown()
-        with gr.Row():
-            video = gr.Video(label="原视频")
-            aligned_audio = gr.Audio(label="按自动 offset 裁出的完整歌曲片段")
 
         with gr.Row():
-            offset = gr.Number(label="完整歌曲 offset（秒）", minimum=0)
+            video = gr.Video(label="视频原声", elem_id="music-review-video")
+            full_song = gr.Audio(
+                label="完整歌曲（整首，加载后自动定位到 offset）",
+                editable=False,
+                playback_position=0,
+            )
+
+        aligned_audio = gr.Audio(
+            label="自动对齐预览（仅截取与视频对应的长度）",
+            editable=False,
+        )
+
+        with gr.Row():
+            offset = gr.Number(
+                label="完整歌曲 offset（秒）",
+                minimum=0,
+                step=0.01,
+            )
+            seek_button = gr.Button("定位到 offset")
             genre = gr.Dropdown(
                 choices=list(GENRE_OPTIONS),
                 label="Genre（必填，可修改）",
@@ -77,14 +136,18 @@ def build_app(
         note = gr.Textbox(label="核验备注", lines=2)
 
         with gr.Row():
-            confirm_button = gr.Button("歌曲和对齐均正确", variant="primary")
+            confirm_button = gr.Button(
+                "歌曲和对齐均正确",
+                variant="primary",
+            )
             reject_song_button = gr.Button("歌曲错误")
-            reject_alignment_button = gr.Button("歌曲正确但对齐错误")
+            reject_alignment_button = gr.Button("歌曲正确，但对齐错误")
 
         outputs = [
             reviewer_state,
             video_id_state,
             video,
+            full_song,
             aligned_audio,
             metadata,
             status,
@@ -109,17 +172,23 @@ def build_app(
                     reviewer_id,
                 )
             preview = build_aligned_preview(row)
+            current_offset = (
+                row.get("corrected_offset")
+                if row.get("corrected_offset") is not None
+                else row.get("song_offset") or 0
+            )
             return (
                 reviewer_id,
                 str(row["video_id"]),
                 _resolve_video(row),
+                _full_song_update(row),
                 str(preview) if preview else None,
                 _metadata(row),
                 f"正在核验：{row['video_id']}  \n{progress_text}",
-                row.get("corrected_offset")
-                if row.get("corrected_offset") is not None
-                else row.get("song_offset") or 0,
-                row.get("final_genre") or row.get("genre_suggestion") or "Pop",
+                current_offset,
+                row.get("final_genre")
+                or row.get("genre_suggestion")
+                or "Pop",
                 row.get("note") or "",
             )
 
@@ -143,7 +212,7 @@ def build_app(
             )
             if not ok:
                 row = list(load_next(reviewer_id))
-                row[5] = message
+                row[6] = message
                 return tuple(row)
             return load_next(reviewer_id)
 
@@ -164,7 +233,20 @@ def build_app(
             )
             return load_next(reviewer_id)
 
+        def seek_to_offset(value: Any) -> Any:
+            return gr.update(playback_position=max(0.0, _number(value)))
+
         start_button.click(load_next, inputs=[reviewer_input], outputs=outputs)
+        seek_button.click(
+            seek_to_offset,
+            inputs=[offset],
+            outputs=[full_song],
+        )
+        offset.change(
+            seek_to_offset,
+            inputs=[offset],
+            outputs=[full_song],
+        )
         confirm_button.click(
             confirm_and_next,
             inputs=[reviewer_state, video_id_state, offset, genre, note],

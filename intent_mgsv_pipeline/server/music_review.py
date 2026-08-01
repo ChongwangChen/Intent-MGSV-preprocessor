@@ -68,17 +68,22 @@ def _review_query() -> str:
         SELECT
             v.id AS video_db_id, v.video_id, v.video_path, v.duration,
             v.creator_name, v.video_title, v.row_json AS video_row_json,
-            p.song_id, p.recognized_title, p.recognized_artist,
+            p.song_id,
+            COALESCE(p.recognized_title, s.title) AS recognized_title,
+            COALESCE(p.recognized_artist, s.artist) AS recognized_artist,
             p.recognition_confidence, p.recognition_votes,
             p.genre_suggestion, p.genre_source, p.genre_confidence,
-            p.qq_song_mid, p.qq_match_score, p.download_source,
-            p.full_song_path, p.song_offset, p.video_audio_start,
+            COALESCE(p.qq_song_mid, s.qq_song_mid) AS qq_song_mid,
+            p.qq_match_score, p.download_source,
+            COALESCE(p.full_song_path, s.full_song_path) AS full_song_path,
+            p.song_offset, p.video_audio_start,
             p.aligned_duration, p.match_score,
             p.status AS preparation_status, p.error,
             r.status AS review_status, r.corrected_offset,
             r.final_genre, r.note
         FROM music_preparations p
         JOIN videos v ON v.id=p.video_id
+        LEFT JOIN songs s ON s.id=p.song_id
         LEFT JOIN song_reviews r
           ON r.video_id=v.id AND r.reviewer_id=?
     """

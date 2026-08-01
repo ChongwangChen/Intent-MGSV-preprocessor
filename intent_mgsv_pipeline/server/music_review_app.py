@@ -16,6 +16,7 @@ from intent_mgsv_pipeline.server.music_review import (
     music_review_progress,
     reject_music_review,
 )
+from intent_mgsv_pipeline.server.peer_annotation_app import _resolve_video
 
 
 def _metadata(row: dict[str, Any]) -> str:
@@ -111,7 +112,7 @@ def build_app(
             return (
                 reviewer_id,
                 str(row["video_id"]),
-                row.get("video_path"),
+                _resolve_video(row),
                 str(preview) if preview else None,
                 _metadata(row),
                 f"正在核验：{row['video_id']}  \n{progress_text}",

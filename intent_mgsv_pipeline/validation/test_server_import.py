@@ -9,6 +9,8 @@ import pandas as pd
 from intent_mgsv_pipeline.server.db import connect
 from intent_mgsv_pipeline.server.backup_database import backup_database
 from intent_mgsv_pipeline.server.import_excel_to_db import import_excel
+from intent_mgsv_pipeline.server.db import init_db
+from intent_mgsv_pipeline.server.repair_video_paths import repair_video_paths
 
 
 class ServerImportTests(unittest.TestCase):
@@ -87,6 +89,54 @@ class ServerImportTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row["emotion"], "显式更新")
         self.assertEqual(row["music_start"], 3.0)
+
+    def test_incremental_import_preserves_existing_video_path(self) -> None:
+        init_db(self.db_path)
+        valid_path = self.root / "video-1.mp4"
+        valid_path.write_bytes(b"video")
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO videos(video_id, video_path, row_json)
+                VALUES ('video-1.mp4', ?, '{}')
+                """,
+                (str(valid_path),),
+            )
+        self._write_source(emotion="欢乐", music_start=1.0)
+        frame = pd.read_excel(self.excel_path, keep_default_na=False)
+        frame["video_path"] = ""
+        frame.to_excel(self.excel_path, index=False)
+
+        import_excel(self.excel_path, self.db_path, "owner")
+
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT video_path FROM videos WHERE video_id='video-1.mp4'"
+            ).fetchone()
+        self.assertEqual(row["video_path"], str(valid_path))
+
+    def test_repair_video_paths_matches_video_id_filename(self) -> None:
+        init_db(self.db_path)
+        scan_root = self.root / "downloads"
+        video = scan_root / "account" / "video-1.mp4"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"video")
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO videos(video_id, video_path, row_json)
+                VALUES ('video-1.mp4', '', '{}')
+                """
+            )
+
+        counts = repair_video_paths(self.db_path, scan_root)
+
+        self.assertEqual(counts["repaired"], 1)
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT video_path FROM videos WHERE video_id='video-1.mp4'"
+            ).fetchone()
+        self.assertEqual(Path(row["video_path"]), video.resolve())
 
     def test_sqlite_backup_is_readable(self) -> None:
         self._write_source(emotion="欢乐", music_start=1.0)

@@ -110,7 +110,10 @@ def import_excel(
                 data,
                 update_existing=update_existing,
             )
-            video_row = conn.execute("SELECT id FROM videos WHERE video_id=?", (video_id,)).fetchone()
+            video_row = conn.execute(
+                "SELECT * FROM videos WHERE video_id=?",
+                (video_id,),
+            ).fetchone()
             video_values = (
                 video_id,
                 text(data.get("douyin_video_id")),
@@ -137,7 +140,7 @@ def import_excel(
                     """,
                     (db_video_id, annotator_id),
                 ).fetchone()
-                if update_existing or owner_annotation_exists is None:
+                if update_existing:
                     conn.execute(
                         """
                         UPDATE videos
@@ -145,6 +148,28 @@ def import_excel(
                             creator_name=?, video_title=?, hashtags=?,
                             full_desc=?, duration=?, width=?, height=?,
                             total_frames=?, frame_rate=?, row_json=?,
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE id=?
+                        """,
+                        video_values[1:] + (db_video_id,),
+                    )
+                elif owner_annotation_exists is None:
+                    conn.execute(
+                        """
+                        UPDATE videos
+                        SET douyin_video_id=COALESCE(NULLIF(?, ''), douyin_video_id),
+                            video_path=COALESCE(NULLIF(?, ''), video_path),
+                            clip_audio_path=COALESCE(NULLIF(?, ''), clip_audio_path),
+                            creator_name=COALESCE(NULLIF(?, ''), creator_name),
+                            video_title=COALESCE(NULLIF(?, ''), video_title),
+                            hashtags=COALESCE(NULLIF(?, ''), hashtags),
+                            full_desc=COALESCE(NULLIF(?, ''), full_desc),
+                            duration=COALESCE(?, duration),
+                            width=COALESCE(?, width),
+                            height=COALESCE(?, height),
+                            total_frames=COALESCE(?, total_frames),
+                            frame_rate=COALESCE(?, frame_rate),
+                            row_json=?,
                             updated_at=CURRENT_TIMESTAMP
                         WHERE id=?
                         """,

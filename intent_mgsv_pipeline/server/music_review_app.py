@@ -11,10 +11,13 @@ from intent_mgsv_pipeline.runtime_config import PATHS
 from intent_mgsv_pipeline.server.db import DEFAULT_DB
 from intent_mgsv_pipeline.server.media_paths import browser_safe_audio_path
 from intent_mgsv_pipeline.server.music_review import (
+    REALIGN_PRESETS,
     build_aligned_preview,
     claim_next_music_review,
     confirm_music_review,
+    get_music_review_record,
     music_review_progress,
+    realign_music_review,
     reject_music_review,
 )
 from intent_mgsv_pipeline.server.peer_annotation_app import _resolve_video
@@ -121,6 +124,16 @@ def build_app(
             editable=False,
         )
 
+        gr.Markdown("### 对齐调整")
+        with gr.Row():
+            realign_preset = gr.Dropdown(
+                choices=list(REALIGN_PRESETS),
+                value="精细（推荐）",
+                label="重新自动对齐模式",
+            )
+            realign_button = gr.Button("重新自动对齐当前视频", variant="secondary")
+            refresh_preview_button = gr.Button("按当前 offset 刷新试听")
+
         with gr.Row():
             offset = gr.Number(
                 label="完整歌曲 offset（秒）",
@@ -141,7 +154,7 @@ def build_app(
                 variant="primary",
             )
             reject_song_button = gr.Button("歌曲错误")
-            reject_alignment_button = gr.Button("歌曲正确，但对齐错误")
+            reject_alignment_button = gr.Button("暂时移出，稍后处理")
 
         outputs = [
             reviewer_state,
@@ -236,6 +249,66 @@ def build_app(
         def seek_to_offset(value: Any) -> Any:
             return gr.update(playback_position=max(0.0, _number(value)))
 
+        def realign_current(
+            reviewer_id: str,
+            video_id: str,
+            preset: str,
+        ) -> tuple[Any, ...]:
+            if not reviewer_id or not video_id:
+                return (
+                    gr.update(),
+                    None,
+                    gr.update(),
+                    "当前没有可重对齐的样本。",
+                    gr.update(),
+                )
+            ok, message, row = realign_music_review(
+                db_path,
+                reviewer_id,
+                video_id,
+                preset=preset,
+            )
+            if row is None:
+                return gr.update(), None, gr.update(), message, gr.update()
+            preview = build_aligned_preview(row)
+            current_offset = (
+                row.get("corrected_offset")
+                if row.get("corrected_offset") is not None
+                else row.get("song_offset") or 0
+            )
+            prefix = "✅" if ok else "⚠️"
+            return (
+                _full_song_update(row),
+                str(preview) if preview else None,
+                _metadata(row),
+                f"{prefix} {message}",
+                current_offset,
+            )
+
+        def refresh_manual_preview(
+            reviewer_id: str,
+            video_id: str,
+            current_offset: Any,
+        ) -> tuple[Any, ...]:
+            if not reviewer_id or not video_id:
+                return None, gr.update(), "当前没有可调整的样本。"
+            row = get_music_review_record(db_path, reviewer_id, video_id)
+            if row is None:
+                return None, gr.update(), "当前视频记录不存在。"
+            value = max(0.0, _number(current_offset))
+            preview_row = dict(row)
+            preview_row["corrected_offset"] = value
+            preview = build_aligned_preview(preview_row)
+            message = (
+                f"已按 offset={value:.3f}s 刷新试听。"
+                "这里只更新试听，点击“歌曲和对齐均正确”后才会写入数据库。"
+            )
+            return (
+                str(preview) if preview else None,
+                gr.update(playback_position=value),
+                message,
+            )
+
         start_button.click(load_next, inputs=[reviewer_input], outputs=outputs)
         seek_button.click(
             seek_to_offset,
@@ -246,6 +319,16 @@ def build_app(
             seek_to_offset,
             inputs=[offset],
             outputs=[full_song],
+        )
+        realign_button.click(
+            realign_current,
+            inputs=[reviewer_state, video_id_state, realign_preset],
+            outputs=[full_song, aligned_audio, metadata, status, offset],
+        )
+        refresh_preview_button.click(
+            refresh_manual_preview,
+            inputs=[reviewer_state, video_id_state, offset],
+            outputs=[aligned_audio, full_song, status],
         )
         confirm_button.click(
             confirm_and_next,

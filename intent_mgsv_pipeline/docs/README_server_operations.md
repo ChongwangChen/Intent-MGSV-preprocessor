@@ -568,3 +568,49 @@ qqmusic_cookies.txt
 
 如果服务器上的受 Git 管理代码有临时修改，应先执行 `git status` 和 `git diff`，
 明确这些修改的来源，不能直接覆盖或丢弃。
+
+## 九、音乐重新对齐与服务器诊断
+
+音乐核验页支持三种只处理当前视频的重新对齐方式：
+
+```text
+标准          与批处理相同，速度较快
+精细（推荐）  更密集地取样，并比较完整歌曲中的多个候选位置
+短片段        针对有效音乐较短的视频，降低单个取样窗口长度
+```
+
+重新自动对齐不会下载歌曲，也不会改动其他视频。自动结果仍不正确时，直接修改
+`offset`，点击“按当前 offset 刷新试听”；确认试听正确后，再点击“歌曲和对齐均正确”。
+“暂时移出，稍后处理”只用于当前无法确定 offset 的记录。
+
+新下载的视频没有全部进入音乐核验或主标注时，先在服务器生成诊断报告：
+
+```bash
+cd /data/users/ccw/intent_mgsv/repo/MGSV_preprocessor
+source config/server.env
+conda activate mgsv_data
+
+python -m intent_mgsv_pipeline.server.collect_diagnostics \
+  --recent 20 \
+  --out outputs/server/diagnostics/latest.txt
+```
+
+报告会列出最近 20 个视频各自停留的阶段、音乐准备状态、核验状态、主标注状态、
+错误信息，以及三个网页服务的日志末尾。报告不包含 Cookie、API 密钥、视频、歌曲
+或数据库原文件。
+
+在本地 Windows PowerShell 中，可以一键让服务器生成报告并拉回本地：
+
+```powershell
+cd E:\MGSV_preprocessor
+.\scripts\pull_server_diagnostics.ps1
+```
+
+本地文件保存到：
+
+```text
+E:\MGSV_preprocessor\server_reports\latest.txt
+```
+
+把这个路径告诉本地 Codex，它就可以直接读取并分析。服务器 SSH 地址或端口改变时，
+可传入 `-Server`、`-Port`、`-User` 和 `-RemoteRoot` 参数。

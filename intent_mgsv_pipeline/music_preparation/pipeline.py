@@ -453,6 +453,12 @@ def prepare_record(
         for candidate in search_results
         if candidate.song_mid and candidate_is_acceptable(candidate, bool(artist))
     ][:3]
+    deferred_review: tuple[
+        QQMusicCandidate,
+        Path,
+        str,
+        AlignmentResult,
+    ] | None = None
 
     for candidate in accepted:
         print(
@@ -497,6 +503,12 @@ def prepare_record(
                 },
             )
             return alignment.status
+        if song_path:
+            if (
+                deferred_review is None
+                or (alignment.score or 0) > (deferred_review[3].score or 0)
+            ):
+                deferred_review = (candidate, song_path, source, alignment)
         errors.append(
             f"{candidate.song_mid}: {alignment.status}: "
             f"{alignment.error or alignment.score}"
@@ -536,6 +548,51 @@ def prepare_record(
             )
         elif error:
             errors.append(error)
+
+    if deferred_review is not None:
+        candidate, song_path, source, alignment = deferred_review
+        review_alignment = AlignmentResult(
+            alignment.song_offset,
+            alignment.video_audio_start,
+            alignment.score,
+            alignment.votes,
+            "needs_review",
+            (
+                "Automatic alignment was not reliable; "
+                "the downloaded QQ candidate requires human review. "
+                f"{alignment.error}"
+            ).strip(),
+        )
+        _store_success(
+            conn,
+            video_db_id=video_db_id,
+            video_duration=(
+                _number(record, "video_total_duration")
+                or probe_media_duration(video_path)
+            ),
+            candidate=candidate,
+            title=candidate.title,
+            artist=candidate.artist,
+            album=candidate.album,
+            song_path=song_path,
+            source=source,
+            alignment=review_alignment,
+            base_values=base_values,
+        )
+        conn.commit()
+        log_event(
+            conn,
+            "music_prepared_for_manual_alignment",
+            actor="music_pipeline",
+            target_type="video",
+            target_id=_value(record, "video_id"),
+            payload={
+                "source": source,
+                "song_mid": candidate.song_mid,
+                "match_score": alignment.score,
+            },
+        )
+        return "needs_review"
 
     final_status = "search_failed" if not accepted else "alignment_failed"
     _upsert_preparation(

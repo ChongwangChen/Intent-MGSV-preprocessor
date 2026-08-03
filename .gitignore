@@ -25,6 +25,7 @@ DouK-Source/
 transnetv2-weights/
 TransNetV2/
 tmp_preview/
+server_reports/
 
 # Local databases and logs
 *.sqlite

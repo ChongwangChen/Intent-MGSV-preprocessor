@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from intent_mgsv_pipeline.music_preparation.alignment import align_video_to_song
 from intent_mgsv_pipeline.runtime_config import PATHS
 from intent_mgsv_pipeline.server.db import (
     DEFAULT_DB,
@@ -16,6 +17,28 @@ from intent_mgsv_pipeline.server.db import (
 
 
 REVIEWABLE_STATUSES = ("ready_for_review", "needs_review")
+REALIGN_PRESETS: dict[str, dict[str, Any]] = {
+    "标准": {},
+    "精细（推荐）": {
+        "max_video_duration": 180.0,
+        "window_duration": 12.0,
+        "max_windows": 9,
+        "hop_length": 512,
+        "candidate_count": 5,
+        "candidate_separation": 5.0,
+        "cluster_tolerance": 0.9,
+    },
+    "短片段": {
+        "max_video_duration": 120.0,
+        "window_duration": 7.0,
+        "max_windows": 10,
+        "hop_length": 512,
+        "candidate_count": 6,
+        "candidate_separation": 4.0,
+        "minimum_window_score": 0.14,
+        "cluster_tolerance": 1.3,
+    },
+}
 
 
 def music_review_progress(
@@ -137,6 +160,140 @@ def claim_next_music_review(
         )
         conn.commit()
         return _review_record(row)
+
+
+def get_music_review_record(
+    db_path: Path,
+    reviewer_id: str,
+    video_id: str,
+) -> dict[str, Any] | None:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        row = conn.execute(
+            _review_query()
+            + """
+            WHERE v.video_id=?
+              AND v.deleted_at IS NULL
+            LIMIT 1
+            """,
+            (reviewer_id, video_id),
+        ).fetchone()
+    return _review_record(row) if row is not None else None
+
+
+def _runtime_media_path(value: Any) -> Path:
+    path = Path(str(value or "").strip())
+    return path if path.is_absolute() else PATHS.project_root / path
+
+
+def realign_music_review(
+    db_path: Path,
+    reviewer_id: str,
+    video_id: str,
+    *,
+    preset: str = "精细（推荐）",
+) -> tuple[bool, str, dict[str, Any] | None]:
+    if preset not in REALIGN_PRESETS:
+        return False, f"未知的重对齐模式：{preset}", None
+    record = get_music_review_record(db_path, reviewer_id, video_id)
+    if record is None:
+        return False, "当前视频记录不存在。", None
+    video_path = _runtime_media_path(record.get("video_path"))
+    song_path = _runtime_media_path(record.get("full_song_path"))
+    if not video_path.is_file():
+        return False, f"视频文件不存在：{video_path}", record
+    if not song_path.is_file():
+        return False, f"完整歌曲文件不存在：{song_path}", record
+
+    result = align_video_to_song(
+        video_path,
+        song_path,
+        **REALIGN_PRESETS[preset],
+    )
+    if result.song_offset is None:
+        message = f"{preset}重对齐未找到可靠位置：{result.error or '匹配分过低'}"
+        with connect(db_path) as conn:
+            conn.execute(
+                """
+                UPDATE music_preparations
+                SET status='needs_review', error=?, updated_at=CURRENT_TIMESTAMP
+                WHERE video_id=?
+                """,
+                (message, record["video_db_id"]),
+            )
+            log_event(
+                conn,
+                "music_realign_failed",
+                actor=reviewer_id,
+                target_type="video",
+                target_id=video_id,
+                payload={"preset": preset, "error": result.error},
+            )
+        return (
+            False,
+            message + "。原 offset 已保留，可手动调整后刷新试听。",
+            get_music_review_record(db_path, reviewer_id, video_id),
+        )
+
+    video_duration = record.get("duration")
+    aligned_duration = None
+    if video_duration is not None:
+        aligned_duration = max(
+            0.0,
+            float(video_duration) - result.video_audio_start,
+        )
+    review_status = (
+        result.status if result.status in REVIEWABLE_STATUSES else "needs_review"
+    )
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE music_preparations
+            SET song_offset=?, video_audio_start=?, aligned_duration=?,
+                match_score=?, status=?, error='', updated_at=CURRENT_TIMESTAMP
+            WHERE video_id=?
+            """,
+            (
+                result.song_offset,
+                result.video_audio_start,
+                aligned_duration,
+                result.score,
+                review_status,
+                record["video_db_id"],
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE song_reviews
+            SET corrected_offset=?, alignment_correct=NULL,
+                status='in_progress', updated_at=CURRENT_TIMESTAMP
+            WHERE video_id=? AND reviewer_id=?
+            """,
+            (result.song_offset, record["video_db_id"], reviewer_id),
+        )
+        log_event(
+            conn,
+            "music_realigned",
+            actor=reviewer_id,
+            target_type="video",
+            target_id=video_id,
+            payload={
+                "preset": preset,
+                "song_offset": result.song_offset,
+                "score": result.score,
+                "votes": result.votes,
+            },
+        )
+    updated = get_music_review_record(db_path, reviewer_id, video_id)
+    return (
+        True,
+        (
+            f"{preset}重对齐完成：offset={result.song_offset:.3f}s，"
+            f"匹配分={result.score or 0:.3f}，有效窗口={result.votes}。"
+            "请试听确认后再提交。"
+        ),
+        updated,
+    )
 
 
 def build_aligned_preview(

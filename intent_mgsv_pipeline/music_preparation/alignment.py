@@ -170,16 +170,38 @@ def chroma_features(
 
 
 def chroma_xcorr(song: np.ndarray, clip: np.ndarray) -> tuple[int, float]:
+    candidates = chroma_xcorr_candidates(song, clip)
+    return candidates[0] if candidates else (0, 0.0)
+
+
+def chroma_xcorr_candidates(
+    song: np.ndarray,
+    clip: np.ndarray,
+    *,
+    max_candidates: int = 1,
+    minimum_separation_frames: int = 1,
+) -> list[tuple[int, float]]:
     song_frames = song.shape[1]
     clip_frames = clip.shape[1]
     if song_frames < clip_frames or clip_frames < 4:
-        return 0, 0.0
+        return []
     correlations = np.zeros(song_frames - clip_frames + 1, dtype=np.float32)
     for index in range(12):
         correlations += np.correlate(song[index], clip[index], mode="valid")
     correlations /= clip_frames
-    lag = int(correlations.argmax())
-    return lag, float(correlations[lag])
+    candidates: list[tuple[int, float]] = []
+    available = correlations.copy()
+    separation = max(1, int(minimum_separation_frames))
+    for _ in range(max(1, int(max_candidates))):
+        lag = int(available.argmax())
+        score = float(available[lag])
+        if not np.isfinite(score):
+            break
+        candidates.append((lag, score))
+        first = max(0, lag - separation)
+        last = min(len(available), lag + separation + 1)
+        available[first:last] = -np.inf
+    return candidates
 
 
 def build_alignment_windows(
@@ -194,8 +216,12 @@ def build_alignment_windows(
         return [(0.0, duration)]
     latest = duration - window_duration
     starts: list[float] = []
-    for fraction in (0.0, 0.20, 0.42, 0.64, 0.82):
-        start = min(latest, max(0.0, duration * fraction))
+    if max_windows <= 5:
+        candidates = [duration * value for value in (0.0, 0.20, 0.42, 0.64, 0.82)]
+    else:
+        candidates = np.linspace(0.0, latest, max_windows).tolist()
+    for candidate in candidates:
+        start = min(latest, max(0.0, candidate))
         if not any(abs(start - old) < window_duration * 0.45 for old in starts):
             starts.append(start)
         if len(starts) >= max_windows:
@@ -212,11 +238,18 @@ def _cluster_matches(
     best_cluster: list[WindowMatch] = []
     best_value = -math.inf
     for anchor in ordered:
-        cluster = [
+        nearby = [
             item
             for item in ordered
             if abs(item.relation - anchor.relation) <= tolerance
         ]
+        # Multiple lag candidates from one video window must count as one vote.
+        cluster_by_window: dict[float, WindowMatch] = {}
+        for item in nearby:
+            old = cluster_by_window.get(item.video_start)
+            if old is None or item.score > old.score:
+                cluster_by_window[item.video_start] = item
+        cluster = list(cluster_by_window.values())
         value = len(cluster) * 0.25 + sum(max(0.0, item.score) for item in cluster)
         if value > best_value:
             best_cluster = cluster
@@ -224,11 +257,16 @@ def _cluster_matches(
     return best_cluster
 
 
-def summarize_matches(matches: Iterable[WindowMatch]) -> AlignmentResult:
-    valid = [item for item in matches if item.score >= 0.18]
+def summarize_matches(
+    matches: Iterable[WindowMatch],
+    *,
+    minimum_window_score: float = 0.18,
+    cluster_tolerance: float = 1.5,
+) -> AlignmentResult:
+    valid = [item for item in matches if item.score >= minimum_window_score]
     if not valid:
         return AlignmentResult(None, 0.0, None, 0, "alignment_failed", "no reliable window match")
-    cluster = _cluster_matches(valid)
+    cluster = _cluster_matches(valid, tolerance=cluster_tolerance)
     weights = np.array([max(item.score, 0.05) for item in cluster], dtype=np.float64)
     relations = np.array([item.relation for item in cluster], dtype=np.float64)
     relation = float(np.average(relations, weights=weights))
@@ -260,19 +298,31 @@ def align_video_to_song(
     max_song_duration: float = 600.0,
     window_duration: float = 15.0,
     max_windows: int = 5,
+    sample_rate: int = SAMPLE_RATE,
+    hop_length: int = HOP_LENGTH,
+    candidate_count: int = 1,
+    candidate_separation: float = 4.0,
+    minimum_window_score: float = 0.18,
+    cluster_tolerance: float = 1.5,
 ) -> AlignmentResult:
     try:
         video_audio, video_rate = _decode_audio(
             video_path,
             duration=max_video_duration,
+            sample_rate=sample_rate,
         )
         song_audio, song_rate = _decode_audio(
             song_path,
             duration=max_song_duration,
+            sample_rate=sample_rate,
         )
         if video_rate != song_rate:
             raise RuntimeError("decoded sample rates do not match")
-        song_chroma = chroma_features(song_audio, song_rate)
+        song_chroma = chroma_features(
+            song_audio,
+            song_rate,
+            hop_length=hop_length,
+        )
         video_duration = len(video_audio) / float(video_rate)
         matches: list[WindowMatch] = []
         for start, duration in build_alignment_windows(
@@ -285,11 +335,28 @@ def align_video_to_song(
             window = video_audio[first:last]
             if len(window) < video_rate * 3:
                 continue
-            clip_chroma = chroma_features(window, video_rate)
-            lag, score = chroma_xcorr(song_chroma, clip_chroma)
-            relation = lag * HOP_LENGTH / float(video_rate) - start
-            matches.append(WindowMatch(start, relation, score))
-        return summarize_matches(matches)
+            clip_chroma = chroma_features(
+                window,
+                video_rate,
+                hop_length=hop_length,
+            )
+            separation_frames = max(
+                1,
+                int(candidate_separation * video_rate / hop_length),
+            )
+            for lag, score in chroma_xcorr_candidates(
+                song_chroma,
+                clip_chroma,
+                max_candidates=candidate_count,
+                minimum_separation_frames=separation_frames,
+            ):
+                relation = lag * hop_length / float(video_rate) - start
+                matches.append(WindowMatch(start, relation, score))
+        return summarize_matches(
+            matches,
+            minimum_window_score=minimum_window_score,
+            cluster_tolerance=cluster_tolerance,
+        )
     except Exception as exc:
         return AlignmentResult(
             None,

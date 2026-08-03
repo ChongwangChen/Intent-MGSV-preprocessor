@@ -5,7 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from intent_mgsv_pipeline.music_preparation.alignment import AlignmentResult
+from intent_mgsv_pipeline.music_preparation.alignment import (
+    AlignmentResult,
+    WindowMatch,
+    summarize_matches,
+)
 from intent_mgsv_pipeline.music_preparation.pipeline import prepare_record
 from intent_mgsv_pipeline.music_preparation.pipeline import (
     prepare_recognized_music,
@@ -16,6 +20,7 @@ from intent_mgsv_pipeline.server.assignment import claim_next
 from intent_mgsv_pipeline.server.db import connect, init_db
 from intent_mgsv_pipeline.server.music_review import confirm_music_review
 from intent_mgsv_pipeline.server.music_review import music_review_progress
+from intent_mgsv_pipeline.server.music_review import realign_music_review
 
 
 class MusicPreparationTests(unittest.TestCase):
@@ -42,6 +47,22 @@ class MusicPreparationTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    def test_multiple_candidates_resolve_repeated_song_sections(self) -> None:
+        result = summarize_matches(
+            [
+                WindowMatch(0.0, 50.0, 0.80),
+                WindowMatch(0.0, 10.0, 0.70),
+                WindowMatch(12.0, 100.0, 0.82),
+                WindowMatch(12.0, 10.2, 0.71),
+                WindowMatch(24.0, 150.0, 0.79),
+                WindowMatch(24.0, 9.9, 0.69),
+            ],
+            cluster_tolerance=0.9,
+        )
+        self.assertEqual(result.status, "ready_for_review")
+        self.assertEqual(result.votes, 3)
+        self.assertAlmostEqual(result.song_offset, 10.035, places=3)
 
     def test_reused_song_is_realigned_for_each_video(self) -> None:
         candidate = QQMusicCandidate(
@@ -124,6 +145,76 @@ class MusicPreparationTests(unittest.TestCase):
         self.assertEqual(offsets, [1.5, 7.5])
         self.assertEqual(song_count, 1)
 
+    def test_downloaded_qq_candidate_with_bad_alignment_reaches_review(self) -> None:
+        candidate = QQMusicCandidate(
+            song_mid="mid-review",
+            title="Right Song",
+            artist="Right Artist",
+            album="Album",
+            duration=180,
+            title_score=1.0,
+            artist_score=1.0,
+            match_score=1.0,
+        )
+        video = self.paths.douk_download_root / "video-needs-review.mp4"
+        video.write_bytes(b"video")
+        song = self.paths.full_songs_dir / "right-song.mp3"
+        song.write_bytes(b"x" * 2048)
+        record = {
+            "video_id": video.name,
+            "video_path": str(video),
+            "song_title": candidate.title,
+            "song_artist": candidate.artist,
+            "acr_confidence": 100,
+            "recognition_votes": 2,
+            "video_total_duration": 20,
+        }
+        failed_alignment = AlignmentResult(
+            None,
+            0.0,
+            0.12,
+            1,
+            "alignment_failed",
+            "no reliable window match",
+        )
+        with (
+            patch(
+                "intent_mgsv_pipeline.music_preparation.pipeline.search_qqmusic",
+                return_value=[candidate],
+            ),
+            patch(
+                "intent_mgsv_pipeline.music_preparation.pipeline.download_qq_candidate",
+                return_value=(song, "qqmusic_test"),
+            ),
+            patch(
+                "intent_mgsv_pipeline.music_preparation.pipeline.align_video_to_song",
+                return_value=failed_alignment,
+            ),
+            connect(self.db_path) as conn,
+        ):
+            status = prepare_record(
+                conn,
+                record,
+                video,
+                self.paths,
+                retry_failed=False,
+                fallback_sources=(),
+            )
+
+        self.assertEqual(status, "needs_review")
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT status, full_song_path, song_id, match_score, error
+                FROM music_preparations
+                """
+            ).fetchone()
+        self.assertEqual(row["status"], "needs_review")
+        self.assertEqual(Path(row["full_song_path"]), song)
+        self.assertIsNotNone(row["song_id"])
+        self.assertEqual(row["match_score"], 0.12)
+        self.assertIn("requires human review", row["error"])
+
     def test_human_confirmation_is_required_before_peer_annotation(self) -> None:
         video = self.paths.douk_download_root / "video-review.mp4"
         video.write_bytes(b"video")
@@ -197,6 +288,78 @@ class MusicPreparationTests(unittest.TestCase):
             )
         claimed = claim_next(self.db_path, "annotator_b")
         self.assertEqual(claimed["video_id"], video.name)
+
+    def test_current_review_can_be_realigned_without_downloading_again(self) -> None:
+        video = self.paths.douk_download_root / "video-realign.mp4"
+        video.write_bytes(b"video")
+        song = self.paths.full_songs_dir / "song-realign.mp3"
+        song.write_bytes(b"x" * 2048)
+        with connect(self.db_path) as conn:
+            video_db_id = conn.execute(
+                """
+                INSERT INTO videos(video_id, video_path, duration, row_json)
+                VALUES (?, ?, 20, '{}')
+                """,
+                (video.name, str(video)),
+            ).lastrowid
+            song_db_id = conn.execute(
+                """
+                INSERT INTO songs(title, artist, full_song_path, row_json)
+                VALUES ('Song', 'Artist', ?, '{}')
+                """,
+                (str(song),),
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO music_preparations(
+                    video_id, song_id, full_song_path, song_offset,
+                    aligned_duration, match_score, status
+                )
+                VALUES (?, ?, ?, 1.0, 20.0, 0.4, 'needs_review')
+                """,
+                (video_db_id, song_db_id, str(song)),
+            )
+            conn.execute(
+                """
+                INSERT INTO song_reviews(video_id, reviewer_id, song_id, status)
+                VALUES (?, 'owner', ?, 'in_progress')
+                """,
+                (video_db_id, song_db_id),
+            )
+
+        result = AlignmentResult(8.25, 0.5, 0.88, 4, "ready_for_review")
+        with patch(
+            "intent_mgsv_pipeline.server.music_review.align_video_to_song",
+            return_value=result,
+        ) as align:
+            ok, message, record = realign_music_review(
+                self.db_path,
+                "owner",
+                video.name,
+                preset="精细（推荐）",
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("offset=8.250s", message)
+        self.assertEqual(record["song_offset"], 8.25)
+        self.assertEqual(record["corrected_offset"], 8.25)
+        self.assertEqual(record["match_score"], 0.88)
+        self.assertEqual(align.call_count, 1)
+        self.assertEqual(align.call_args.args, (video, song))
+        self.assertEqual(align.call_args.kwargs["hop_length"], 512)
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT status, song_offset, video_audio_start, aligned_duration
+                FROM music_preparations
+                WHERE video_id=?
+                """,
+                (video_db_id,),
+            ).fetchone()
+        self.assertEqual(row["status"], "ready_for_review")
+        self.assertEqual(row["song_offset"], 8.25)
+        self.assertEqual(row["video_audio_start"], 0.5)
+        self.assertEqual(row["aligned_duration"], 19.5)
 
     def test_standalone_preparation_skips_existing_dataset_by_default(self) -> None:
         video = self.paths.douk_download_root / "existing.mp4"

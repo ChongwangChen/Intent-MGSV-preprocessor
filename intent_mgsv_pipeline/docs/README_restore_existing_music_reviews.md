@@ -17,6 +17,11 @@ music_preparations 不存在
 
 默认运行是 dry-run，不修改数据库。缺标签或缺歌曲文件的记录只进入报告。
 
+数据以现存视频为主：确实找不到视频文件的记录可以在正式执行时清理。若同名视频
+存在多个不同候选，则记为 `ambiguous_video_file`，不会自动删除。歌曲仅在没有
+任何其他视频、标注或核验记录引用时删除，且物理音频只会从 `full_songs` 或
+`full_music` 受管目录中删除。
+
 ## 第一步：备份
 
 ```bash
@@ -40,6 +45,7 @@ python -m intent_mgsv_pipeline.server.restore_music_review_queue \
 ```text
 ready
 missing_video_file
+ambiguous_video_file
 missing_song_file
 missing_labels
 restored
@@ -58,10 +64,20 @@ outputs/server/diagnostics/restore_music_review_queue.json
 ```bash
 python -m intent_mgsv_pipeline.server.restore_music_review_queue \
   --db "$MGSV_DB" \
-  --apply
+  --apply \
+  --delete-missing-videos
 ```
 
 `ready` 记录会进入 `needs_review`，不会自动确认歌曲。
+
+执行结果还会报告：
+
+```text
+deleted_missing_videos
+deleted_orphan_songs
+deleted_orphan_song_files
+orphan_song_file_errors
+```
 
 ## 第四步：人工快速确认
 

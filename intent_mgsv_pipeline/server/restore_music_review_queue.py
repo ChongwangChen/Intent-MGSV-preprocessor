@@ -20,6 +20,7 @@ from intent_mgsv_pipeline.server.owner_annotation import owner_required_missing
 
 
 AUDIO_SUFFIXES = {".mp3", ".m4a", ".flac", ".wav", ".ogg", ".aac"}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv"}
 
 
 def _audio_index(paths: RuntimePaths) -> dict[str, list[Path]]:
@@ -37,8 +38,8 @@ def _video_index(paths: RuntimePaths) -> dict[str, list[Path]]:
     index: dict[str, list[Path]] = {}
     if not paths.douk_download_root.is_dir():
         return index
-    for path in paths.douk_download_root.rglob("*.mp4"):
-        if path.is_file():
+    for path in paths.douk_download_root.rglob("*"):
+        if path.is_file() and path.suffix.casefold() in VIDEO_SUFFIXES:
             index.setdefault(path.name.casefold(), []).append(path.resolve())
     return index
 
@@ -72,15 +73,52 @@ def _resolve_video_path(
     video_id: str,
     paths: RuntimePaths,
     video_index: dict[str, list[Path]],
-) -> Path | None:
+) -> tuple[Path | None, str]:
     text = str(raw_path or "").strip()
     if text:
         path = Path(text)
         direct = path if path.is_absolute() else paths.project_root / path
         if direct.is_file():
-            return direct.resolve()
-    matches = video_index.get(_basename(video_id).casefold(), [])
-    return matches[0] if len(matches) == 1 else None
+            return direct.resolve(), "valid"
+
+    matches: list[Path] = []
+    for value in (video_id, text):
+        for match in video_index.get(_basename(value).casefold(), []):
+            if match not in matches:
+                matches.append(match)
+    if not matches:
+        return None, "missing"
+    if len(matches) == 1:
+        return matches[0], "valid"
+
+    sizes = {match.stat().st_size for match in matches}
+    if len(sizes) == 1:
+        matches.sort(key=lambda path: (len(path.parts), str(path)))
+        return matches[0], "equivalent_duplicates"
+    return None, "ambiguous"
+
+
+def _managed_audio_path(raw_path: str, paths: RuntimePaths) -> Path | None:
+    if not raw_path:
+        return None
+    path = Path(raw_path).resolve()
+    for root in (paths.full_songs_dir, paths.full_music_dir):
+        try:
+            path.relative_to(root.resolve())
+        except ValueError:
+            continue
+        return path
+    return None
+
+
+def _song_is_referenced(conn: Any, song_id: int) -> bool:
+    for table in ("annotations", "music_preparations", "song_reviews"):
+        if conn.execute(
+            f"SELECT 1 FROM {table} WHERE song_id=? LIMIT 1",
+            (song_id,),
+        ).fetchone():
+            return True
+    return False
 
 
 def _first_text(data: dict[str, Any], *keys: str) -> str:
@@ -142,7 +180,7 @@ def inspect_restore_candidates(
             paths,
             audio_index,
         )
-        video_path = _resolve_video_path(
+        video_path, video_resolution = _resolve_video_path(
             row["video_path"],
             str(row["video_id"]),
             paths,
@@ -160,10 +198,12 @@ def inspect_restore_candidates(
             "music_artist",
             "artist",
         )
-        if missing:
-            state = "missing_labels"
-        elif video_path is None:
+        if video_resolution == "missing":
             state = "missing_video_file"
+        elif video_resolution == "ambiguous":
+            state = "ambiguous_video_file"
+        elif missing:
+            state = "missing_labels"
         elif song_path is None:
             state = "missing_song_file"
         else:
@@ -174,6 +214,7 @@ def inspect_restore_candidates(
                 "video_db_id": int(row["video_db_id"]),
                 "video_id": str(row["video_id"]),
                 "video_path": str(video_path) if video_path else "",
+                "video_resolution": video_resolution,
                 "annotation_id": int(row["id"]),
                 "song_id": row["song_id"],
                 "song_title": title,
@@ -200,6 +241,7 @@ def restore_music_review_queue(
     owner_id: str = "owner",
     limit: int = 0,
     apply: bool = False,
+    delete_missing_videos: bool = False,
 ) -> dict[str, Any]:
     candidates = inspect_restore_candidates(
         db_path,
@@ -209,8 +251,61 @@ def restore_music_review_queue(
     )
     counts = Counter(item["state"] for item in candidates)
     restored_count = 0
+    deleted_missing_videos = 0
+    deleted_orphan_songs = 0
+    deleted_orphan_song_files = 0
+    orphan_song_file_errors: list[str] = []
+    orphan_song_paths: list[str] = []
     if apply:
         with connect(db_path) as conn:
+            if delete_missing_videos:
+                song_ids: set[int] = set()
+                resolved_song_paths: dict[int, str] = {}
+                for item in candidates:
+                    if item["state"] != "missing_video_file":
+                        continue
+                    if item["song_id"] is not None:
+                        song_id = int(item["song_id"])
+                        song_ids.add(song_id)
+                        if item["full_song_path"]:
+                            resolved_song_paths[song_id] = item["full_song_path"]
+                    log_event(
+                        conn,
+                        "delete_missing_video",
+                        actor=owner_id,
+                        target_type="video",
+                        target_id=item["video_id"],
+                        payload={
+                            "reason": "video_file_missing",
+                            "song_id": item["song_id"],
+                            "full_song_path": item["full_song_path"],
+                        },
+                    )
+                    conn.execute(
+                        "DELETE FROM videos WHERE id=?",
+                        (item["video_db_id"],),
+                    )
+                    deleted_missing_videos += 1
+
+                for song_id in song_ids:
+                    if _song_is_referenced(conn, song_id):
+                        continue
+                    song = conn.execute(
+                        "SELECT full_song_path FROM songs WHERE id=?",
+                        (song_id,),
+                    ).fetchone()
+                    if song is None:
+                        continue
+                    managed_path = _managed_audio_path(
+                        resolved_song_paths.get(song_id)
+                        or str(song["full_song_path"] or ""),
+                        paths,
+                    )
+                    conn.execute("DELETE FROM songs WHERE id=?", (song_id,))
+                    deleted_orphan_songs += 1
+                    if managed_path is not None:
+                        orphan_song_paths.append(str(managed_path))
+
             for item in candidates:
                 if item["state"] != "ready":
                     continue
@@ -328,15 +423,29 @@ def restore_music_review_queue(
                     },
                 )
                 restored_count += 1
+
+        for raw_path in orphan_song_paths:
+            path = Path(raw_path)
+            try:
+                if path.is_file():
+                    path.unlink()
+                    deleted_orphan_song_files += 1
+            except OSError as exc:
+                orphan_song_file_errors.append(f"{path}: {exc}")
     return {
         "mode": "apply" if apply else "dry-run",
         "owner_id": owner_id,
         "scanned": len(candidates),
         "ready": counts["ready"],
         "missing_video_file": counts["missing_video_file"],
+        "ambiguous_video_file": counts["ambiguous_video_file"],
         "missing_song_file": counts["missing_song_file"],
         "missing_labels": counts["missing_labels"],
         "restored": restored_count,
+        "deleted_missing_videos": deleted_missing_videos,
+        "deleted_orphan_songs": deleted_orphan_songs,
+        "deleted_orphan_song_files": deleted_orphan_song_files,
+        "orphan_song_file_errors": orphan_song_file_errors,
         "items": candidates,
     }
 
@@ -357,6 +466,14 @@ def main() -> None:
         help="Write ready candidates to music_preparations.",
     )
     parser.add_argument(
+        "--delete-missing-videos",
+        action="store_true",
+        help=(
+            "With --apply, delete database rows whose video files are truly "
+            "missing and remove song files only when no other row uses them."
+        ),
+    )
+    parser.add_argument(
         "--report",
         default=str(
             PATHS.output_dir
@@ -371,6 +488,7 @@ def main() -> None:
         owner_id=args.owner_id,
         limit=max(0, args.limit),
         apply=args.apply,
+        delete_missing_videos=args.delete_missing_videos,
     )
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)

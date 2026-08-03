@@ -139,6 +139,90 @@ class RestoreMusicReviewQueueTests(unittest.TestCase):
         self.assertEqual(row["aligned_duration"], 15.0)
         self.assertEqual(Path(row["full_song_path"]), song.resolve())
 
+    def test_delete_missing_videos_removes_only_orphan_song_files(self) -> None:
+        shared_song = self.paths.full_songs_dir / "shared.mp3"
+        orphan_song = self.paths.full_songs_dir / "orphan.mp3"
+        shared_song.write_bytes(b"shared")
+        orphan_song.write_bytes(b"orphan")
+
+        self._insert_owner_row(
+            "existing.mp4",
+            song_path=str(shared_song),
+        )
+        self._insert_owner_row(
+            "missing-shared.mp4",
+            song_path=str(shared_song),
+            video_exists=False,
+        )
+        self._insert_owner_row(
+            "missing-orphan.mp4",
+            song_path=r"E:\old\full_songs\orphan.mp3",
+            video_exists=False,
+        )
+
+        applied = restore_music_review_queue(
+            self.paths.server_db,
+            self.paths,
+            apply=True,
+            delete_missing_videos=True,
+        )
+
+        self.assertEqual(applied["deleted_missing_videos"], 2)
+        self.assertEqual(applied["deleted_orphan_songs"], 1)
+        self.assertEqual(applied["deleted_orphan_song_files"], 1)
+        self.assertTrue(shared_song.is_file())
+        self.assertFalse(orphan_song.exists())
+        with connect(self.paths.server_db) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM songs WHERE full_song_path=?",
+                    (str(shared_song),),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM songs WHERE full_song_path=?",
+                    (r"E:\old\full_songs\orphan.mp3",),
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_ambiguous_video_candidates_are_not_deleted(self) -> None:
+        song = self.paths.full_songs_dir / "song.mp3"
+        song.write_bytes(b"song")
+        self._insert_owner_row(
+            "ambiguous.mp4",
+            song_path=str(song),
+            video_exists=False,
+        )
+        first = self.paths.douk_download_root / "first" / "ambiguous.mp4"
+        second = self.paths.douk_download_root / "second" / "ambiguous.mp4"
+        first.parent.mkdir()
+        second.parent.mkdir()
+        first.write_bytes(b"first")
+        second.write_bytes(b"different-size")
+
+        applied = restore_music_review_queue(
+            self.paths.server_db,
+            self.paths,
+            apply=True,
+            delete_missing_videos=True,
+        )
+
+        self.assertEqual(applied["ambiguous_video_file"], 1)
+        self.assertEqual(applied["missing_video_file"], 0)
+        self.assertEqual(applied["deleted_missing_videos"], 0)
+        with connect(self.paths.server_db) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0],
+                1,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

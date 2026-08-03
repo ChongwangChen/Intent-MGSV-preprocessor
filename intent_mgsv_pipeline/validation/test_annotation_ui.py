@@ -7,10 +7,16 @@ from intent_mgsv_pipeline.server.annotation_options import (
     merge_group_values,
     split_group_values,
 )
+from intent_mgsv_pipeline.server.owner_annotation import normalize_sync
 from intent_mgsv_pipeline.server.segment_ui import segment_schemes
+from intent_mgsv_pipeline.server.shot_detection import build_shot_fields
 
 
 class AnnotationUiTests(unittest.TestCase):
+    def test_legacy_numeric_sync_value_is_normalized(self) -> None:
+        self.assertEqual(normalize_sync("2"), "Yes")
+        self.assertEqual(normalize_sync(2), "Yes")
+
     def test_non_sync_video_uses_one_whole_video_segment(self) -> None:
         bounds_a, caption, bounds_b = segment_schemes(
             {
@@ -50,6 +56,23 @@ class AnnotationUiTests(unittest.TestCase):
             merge_group_values(*groups),
             ["欢乐", "神秘", "伤感"],
         )
+
+    def test_shot_detection_builds_two_even_schemes(self) -> None:
+        fields = build_shot_fields(
+            [
+                (0.1, 0.9),
+                (2.0, 0.8),
+                (4.0, 0.7),
+                (7.0, 0.9),
+                (9.8, 0.9),
+            ],
+            10.0,
+            threshold=0.35,
+        )
+
+        self.assertEqual(fields["shot_points"], "2.00/4.00/7.00")
+        self.assertEqual(fields["shot_points_3"], "2.00/4.00/7.00")
+        self.assertEqual(fields["shot_points_5"], "SAME")
 
 
 if __name__ == "__main__":

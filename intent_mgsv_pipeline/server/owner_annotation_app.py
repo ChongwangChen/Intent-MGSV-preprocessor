@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +22,7 @@ from intent_mgsv_pipeline.server.annotation_options import (
 )
 from intent_mgsv_pipeline.server.assignment import (
     claim_next_owner,
+    get_annotation_record,
     get_previous_annotation,
     owner_annotation_progress,
 )
@@ -25,6 +32,7 @@ from intent_mgsv_pipeline.server.owner_annotation import (
     SYNC_OPTIONS,
     VOCAL_OPTIONS,
     complete_owner_annotation,
+    normalize_sync,
     save_owner_patch,
 )
 from intent_mgsv_pipeline.server.peer_annotation import (
@@ -36,6 +44,98 @@ from intent_mgsv_pipeline.server.segment_ui import (
     MAX_SCORE_SLOTS,
     segment_form_updates,
 )
+
+
+OWNER_CSS = """
+#owner-video {
+    width: min(100%, 520px);
+    margin: 0 auto;
+}
+#owner-video video {
+    max-height: 420px !important;
+    object-fit: contain !important;
+    background: #000;
+}
+"""
+_SHOT_DETECTION_LOCK = threading.Lock()
+
+
+def _preprocess_python() -> str:
+    configured = os.environ.get("MGSV_PREPROCESS_PYTHON", "").strip()
+    candidates = [
+        configured,
+        "/data/conda/envs/mgsv_preprocess/bin/python",
+        sys.executable,
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if path.is_file():
+            return str(path)
+        executable = shutil.which(candidate)
+        if executable:
+            return executable
+    raise FileNotFoundError(
+        "找不到分镜预处理 Python；请设置 MGSV_PREPROCESS_PYTHON"
+    )
+
+
+def _parse_shot_result(output: str) -> dict[str, Any] | None:
+    prefix = "MGSV_SHOT_RESULT="
+    for line in reversed(str(output or "").splitlines()):
+        if line.startswith(prefix):
+            try:
+                value = json.loads(line[len(prefix):])
+            except json.JSONDecodeError:
+                return None
+            return value if isinstance(value, dict) else None
+    return None
+
+
+def _run_shot_detection(
+    db_path: Path,
+    owner_id: str,
+    video_id: str,
+    threshold: float,
+) -> dict[str, Any]:
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    result = subprocess.run(
+        [
+            _preprocess_python(),
+            "-m",
+            "intent_mgsv_pipeline.server.shot_detection",
+            "--db",
+            str(db_path),
+            "--owner-id",
+            owner_id,
+            "--video-id",
+            video_id,
+            "--threshold",
+            str(threshold),
+        ],
+        cwd=PATHS.project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+    )
+    combined = "\n".join(
+        part for part in (result.stdout, result.stderr) if part
+    )
+    payload = _parse_shot_result(combined)
+    if result.returncode != 0 or not payload or not payload.get("ok"):
+        detail = (
+            str((payload or {}).get("error", "")).strip()
+            or "\n".join(combined.strip().splitlines()[-4:])
+            or f"分镜进程退出码 {result.returncode}"
+        )
+        raise RuntimeError(detail)
+    return payload
 
 
 def _aligned_preview(row: dict[str, Any]) -> str | None:
@@ -98,11 +198,17 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
         status = gr.Markdown("点击开始，领取歌曲已核验的样本。")
 
         with gr.Row():
-            video = gr.Video(label="当前视频", elem_id="owner-video")
-            aligned_audio = gr.Audio(
-                label="与视频对应的完整歌曲片段",
-                editable=False,
-            )
+            with gr.Column(scale=2, min_width=360):
+                video = gr.Video(
+                    label="当前视频",
+                    elem_id="owner-video",
+                    height=420,
+                )
+            with gr.Column(scale=1, min_width=280):
+                aligned_audio = gr.Audio(
+                    label="与视频对应的完整歌曲片段",
+                    editable=False,
+                )
         metadata = gr.Markdown()
 
         gr.Markdown("## 1. 是否卡点")
@@ -112,6 +218,19 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
         )
 
         gr.Markdown("## 2. 分段契合度")
+        with gr.Row():
+            shot_threshold = gr.Slider(
+                minimum=0.2,
+                maximum=0.8,
+                value=0.35,
+                step=0.05,
+                label="转场检测阈值",
+            )
+            detect_shots_button = gr.Button(
+                "自动检测 / 重新检测当前视频分镜",
+                variant="secondary",
+            )
+        shot_status = gr.Markdown()
         with gr.Accordion("自动分镜结果", open=False):
             with gr.Row():
                 shot_points_3 = gr.Textbox(
@@ -193,6 +312,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
             vocal_presence,
             genre,
             segment_player,
+            shot_status,
             *group_components,
             *score_components,
         ]
@@ -209,6 +329,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 "",
                 "",
                 None,
+                "",
                 "",
                 "",
                 *([] for _ in group_components),
@@ -238,7 +359,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 _aligned_preview(row),
                 _metadata(row),
                 message or f"正在标注。{progress_text}",
-                row.get("sync_level") or None,
+                normalize_sync(row.get("sync_level")) or None,
                 row.get("shot_points_3") or "",
                 row.get("shot_points_5") or "",
                 row.get("vocal_presence")
@@ -246,6 +367,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 else None,
                 row.get("genre") or "",
                 segment_outputs[0],
+                "",
                 *_group_values(row),
                 *segment_outputs[1:],
             )
@@ -415,6 +537,54 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 video_elem_id="owner-video",
             )
 
+        def detect_current_shots(
+            video_id: str,
+            threshold: Any,
+        ) -> tuple[Any, ...]:
+            noop = (
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                *(gr.update() for _ in score_components),
+            )
+            if not video_id:
+                return ("当前没有可检测的视频。", *noop)
+            if not _SHOT_DETECTION_LOCK.acquire(blocking=False):
+                return ("已有分镜检测任务正在运行，请稍候。", *noop)
+            try:
+                payload = _run_shot_detection(
+                    db_path,
+                    owner_id,
+                    video_id,
+                    float(threshold or 0.35),
+                )
+                row = get_annotation_record(db_path, owner_id, video_id)
+                if row is None:
+                    raise RuntimeError("检测完成，但无法重新读取数据库记录")
+                segment_outputs = segment_form_updates(
+                    row,
+                    video_elem_id="owner-video",
+                )
+                detected = int(payload.get("detected_count") or 0)
+                message = (
+                    f"分镜检测完成：检测到 {detected} 个有效转场点；"
+                    "旧分段评分已清空，请按新片段重新评分。"
+                )
+                return (
+                    message,
+                    "Yes",
+                    row.get("shot_points_3") or "NONE",
+                    row.get("shot_points_5") or "NONE",
+                    *segment_outputs,
+                )
+            except subprocess.TimeoutExpired:
+                return ("分镜检测超过 10 分钟，已停止。", *noop)
+            except Exception as exc:
+                return (f"分镜检测失败：{exc}", *noop)
+            finally:
+                _SHOT_DETECTION_LOCK.release()
+
         start_button.click(load_next, outputs=outputs)
         save_button.click(save_current, inputs=form_inputs, outputs=status)
         previous_button.click(previous, inputs=form_inputs, outputs=outputs)
@@ -438,6 +608,19 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 inputs=segment_refresh_inputs,
                 outputs=segment_refresh_outputs,
             )
+
+        detect_shots_button.click(
+            detect_current_shots,
+            inputs=[video_id_state, shot_threshold],
+            outputs=[
+                shot_status,
+                sync_level,
+                shot_points_3,
+                shot_points_5,
+                segment_player,
+                *score_components,
+            ],
+        )
 
         for component in [
             sync_level,
@@ -469,6 +652,7 @@ def main() -> None:
     app.launch(
         server_name=args.host,
         server_port=args.port,
+        css=OWNER_CSS,
         allowed_paths=[
             str(PATHS.project_root),
             str(PATHS.douk_download_root),

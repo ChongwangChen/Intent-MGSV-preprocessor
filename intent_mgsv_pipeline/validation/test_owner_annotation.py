@@ -95,6 +95,22 @@ class OwnerAnnotationTests(unittest.TestCase):
         self.assertEqual(saved["status"], "completed")
         self.assertEqual(owner_annotation_progress(self.db_path)["completed"], 1)
 
+    def test_detected_no_shot_marker_allows_whole_video_score(self) -> None:
+        values = self._valid_values()
+        values["shot_points_3"] = "NONE"
+        values["shot_points_5"] = "NONE"
+        values["seg_scores_3"] = ["4"]
+        values["seg_scores_5"] = []
+        completed, missing = complete_owner_annotation(
+            self.db_path,
+            "owner",
+            "video-1.mp4",
+            **values,
+        )
+
+        self.assertTrue(completed)
+        self.assertEqual(missing, [])
+
     def test_invalid_edit_reopens_completed_annotation(self) -> None:
         claim_next_owner(self.db_path)
         complete_owner_annotation(

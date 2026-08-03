@@ -64,6 +64,13 @@ conda activate mgsv_preprocess
 python check_auto_environment.py
 ```
 
+为了让运行在 `mgsv_data` 环境中的主标注网页能够调用 TransNetV2，还需要在
+`config/server.env` 中设置：
+
+```bash
+export MGSV_PREPROCESS_PYTHON=/data/conda/envs/mgsv_preprocess/bin/python
+```
+
 只有全部显示 `[OK]` 后才运行：
 
 ```bash
@@ -383,7 +390,7 @@ owner 页面只领取已经完成音乐核验的记录，页面操作顺序为�
 
 ```text
 1. 先选择是否卡点
-2. 按 auto.py 已生成的分镜点自动划分视频片段
+2. 使用已有分镜点，或点击“自动检测 / 重新检测当前视频分镜”
 3. 点击每个片段按钮试听，并逐段打 1-5 分
 4. 标注 vocal_presence 与 genre
 5. 在 Emotion / Style / Usage Scene 三大类下继续按细分类选择
@@ -402,7 +409,10 @@ usage_scene
 对应可见分段的全部评分
 ```
 
-卡点视频还必须有方案 A 分镜点。页面支持输入后自动保存、保存并继续、连续返回
+自动分镜只处理当前视频并直接更新数据库，不会批量改写 Excel。重新检测会清空
+旧分段评分，防止旧分数错误对应到新片段；阈值越低越容易找出较弱的转场。
+检测结果为 `NONE` 时按整段评分。卡点视频还必须有方案 A 分镜检测结果。页面支持
+输入后自动保存、保存并继续、连续返回
 历史已完成记录；返回前会先保存当前表单。将历史记录改成不完整状态时，
 `completed` 会自动撤销，防止遗漏标签仍被计为完成。
 

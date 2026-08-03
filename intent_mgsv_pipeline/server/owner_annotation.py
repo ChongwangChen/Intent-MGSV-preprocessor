@@ -30,6 +30,10 @@ def normalize_sync(value: Any) -> str:
         return "Yes"
     if text in {"no", "false", "0", "否"}:
         return "No"
+    try:
+        return "Yes" if float(text) >= 1 else "No"
+    except (TypeError, ValueError):
+        pass
     return ""
 
 
@@ -55,7 +59,12 @@ def owner_required_missing(row: dict[str, Any]) -> list[str]:
     sync = normalize_sync(row.get("sync_level"))
     if not sync:
         missing.append("sync_level")
-    if sync == "Yes" and not parse_points(row.get("shot_points_3")):
+    raw_points_3 = str(row.get("shot_points_3", "") or "").strip().upper()
+    if (
+        sync == "Yes"
+        and raw_points_3 != "NONE"
+        and not parse_points(raw_points_3)
+    ):
         missing.append("shot_points_3")
 
     count_3, count_5 = expected_score_counts(

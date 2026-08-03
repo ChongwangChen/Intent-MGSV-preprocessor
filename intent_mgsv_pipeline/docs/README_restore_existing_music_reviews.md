@@ -11,6 +11,7 @@
 owner 记录存在
 music_preparations 不存在
 除 song confirmation 外的 owner 必填项全部完成
+服务器能找到视频文件
 服务器能找到完整歌曲文件
 ```
 
@@ -38,6 +39,7 @@ python -m intent_mgsv_pipeline.server.restore_music_review_queue \
 
 ```text
 ready
+missing_video_file
 missing_song_file
 missing_labels
 restored

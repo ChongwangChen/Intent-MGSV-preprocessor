@@ -33,6 +33,16 @@ def _audio_index(paths: RuntimePaths) -> dict[str, list[Path]]:
     return index
 
 
+def _video_index(paths: RuntimePaths) -> dict[str, list[Path]]:
+    index: dict[str, list[Path]] = {}
+    if not paths.douk_download_root.is_dir():
+        return index
+    for path in paths.douk_download_root.rglob("*.mp4"):
+        if path.is_file():
+            index.setdefault(path.name.casefold(), []).append(path.resolve())
+    return index
+
+
 def _basename(value: Any) -> str:
     text = str(value or "").strip().replace("\\", "/")
     return text.rsplit("/", 1)[-1] if text else ""
@@ -57,6 +67,22 @@ def _resolve_song_path(
     return None
 
 
+def _resolve_video_path(
+    raw_path: Any,
+    video_id: str,
+    paths: RuntimePaths,
+    video_index: dict[str, list[Path]],
+) -> Path | None:
+    text = str(raw_path or "").strip()
+    if text:
+        path = Path(text)
+        direct = path if path.is_absolute() else paths.project_root / path
+        if direct.is_file():
+            return direct.resolve()
+    matches = video_index.get(_basename(video_id).casefold(), [])
+    return matches[0] if len(matches) == 1 else None
+
+
 def _first_text(data: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = str(data.get(key, "") or "").strip()
@@ -74,11 +100,12 @@ def inspect_restore_candidates(
 ) -> list[dict[str, Any]]:
     init_db(db_path)
     audio_index = _audio_index(paths)
+    video_index = _video_index(paths)
     with connect(db_path) as conn:
         rows = conn.execute(
             """
             SELECT
-                v.id AS video_db_id, v.video_id, v.duration,
+                v.id AS video_db_id, v.video_id, v.video_path, v.duration,
                 a.*, s.title AS song_title_db, s.artist AS song_artist_db,
                 s.album AS song_album_db,
                 s.full_song_path AS song_path_db,
@@ -115,6 +142,12 @@ def inspect_restore_candidates(
             paths,
             audio_index,
         )
+        video_path = _resolve_video_path(
+            row["video_path"],
+            str(row["video_id"]),
+            paths,
+            video_index,
+        )
         title = str(row["song_title_db"] or "").strip() or _first_text(
             restored,
             "song_title",
@@ -129,6 +162,8 @@ def inspect_restore_candidates(
         )
         if missing:
             state = "missing_labels"
+        elif video_path is None:
+            state = "missing_video_file"
         elif song_path is None:
             state = "missing_song_file"
         else:
@@ -138,6 +173,7 @@ def inspect_restore_candidates(
                 "state": state,
                 "video_db_id": int(row["video_db_id"]),
                 "video_id": str(row["video_id"]),
+                "video_path": str(video_path) if video_path else "",
                 "annotation_id": int(row["id"]),
                 "song_id": row["song_id"],
                 "song_title": title,
@@ -178,6 +214,14 @@ def restore_music_review_queue(
             for item in candidates:
                 if item["state"] != "ready":
                     continue
+                conn.execute(
+                    """
+                    UPDATE videos
+                    SET video_path=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    (item["video_path"], item["video_db_id"]),
+                )
                 song_id = item["song_id"]
                 existing = conn.execute(
                     "SELECT id FROM songs WHERE full_song_path=?",
@@ -289,6 +333,7 @@ def restore_music_review_queue(
         "owner_id": owner_id,
         "scanned": len(candidates),
         "ready": counts["ready"],
+        "missing_video_file": counts["missing_video_file"],
         "missing_song_file": counts["missing_song_file"],
         "missing_labels": counts["missing_labels"],
         "restored": restored_count,

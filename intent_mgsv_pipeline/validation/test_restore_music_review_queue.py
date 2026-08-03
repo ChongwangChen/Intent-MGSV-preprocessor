@@ -28,6 +28,7 @@ class RestoreMusicReviewQueueTests(unittest.TestCase):
             server_db=output / "server.sqlite3",
             acr_config_file=self.root / "acr.json",
         )
+        self.paths.douk_download_root.mkdir(parents=True)
         self.paths.full_songs_dir.mkdir(parents=True)
         init_db(self.paths.server_db)
 
@@ -40,22 +41,33 @@ class RestoreMusicReviewQueueTests(unittest.TestCase):
         *,
         song_path: str,
         emotion: str = "Happy",
+        video_exists: bool = True,
     ) -> int:
+        video_path = self.paths.douk_download_root / video_id
+        if video_exists:
+            video_path.write_bytes(b"video")
         with connect(self.paths.server_db) as conn:
             video_db_id = conn.execute(
                 """
                 INSERT INTO videos(video_id, video_path, duration, row_json)
                 VALUES (?, ?, 15, '{}')
                 """,
-                (video_id, str(self.root / video_id)),
+                (video_id, str(self.root / "old" / video_id)),
             ).lastrowid
-            song_id = conn.execute(
-                """
-                INSERT INTO songs(title, artist, full_song_path, row_json)
-                VALUES ('Song', 'Artist', ?, '{}')
-                """,
+            existing_song = conn.execute(
+                "SELECT id FROM songs WHERE full_song_path=?",
                 (song_path,),
-            ).lastrowid
+            ).fetchone()
+            if existing_song:
+                song_id = int(existing_song["id"])
+            else:
+                song_id = conn.execute(
+                    """
+                    INSERT INTO songs(title, artist, full_song_path, row_json)
+                    VALUES ('Song', 'Artist', ?, '{}')
+                    """,
+                    (song_path,),
+                ).lastrowid
             conn.execute(
                 """
                 INSERT INTO annotations(
@@ -86,6 +98,11 @@ class RestoreMusicReviewQueueTests(unittest.TestCase):
             "missing-song.mp4",
             song_path=r"E:\old\missing.mp3",
         )
+        self._insert_owner_row(
+            "missing-video.mp4",
+            song_path=str(song),
+            video_exists=False,
+        )
 
         dry_run = restore_music_review_queue(
             self.paths.server_db,
@@ -95,6 +112,7 @@ class RestoreMusicReviewQueueTests(unittest.TestCase):
         self.assertEqual(dry_run["ready"], 1)
         self.assertEqual(dry_run["missing_labels"], 1)
         self.assertEqual(dry_run["missing_song_file"], 1)
+        self.assertEqual(dry_run["missing_video_file"], 1)
         with connect(self.paths.server_db) as conn:
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM music_preparations").fetchone()[0],

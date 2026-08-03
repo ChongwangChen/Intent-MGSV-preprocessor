@@ -34,8 +34,12 @@ def split_labels(value: Any) -> list[str]:
 
 
 def union_labels(a: Any, b: Any) -> str:
+    return union_many_labels([a, b])
+
+
+def union_many_labels(values: list[Any]) -> str:
     labels = []
-    for value in (a, b):
+    for value in values:
         for label in split_labels(value):
             if label not in labels:
                 labels.append(label)
@@ -60,16 +64,19 @@ def parse_scores(value: Any) -> list[float | None]:
 
 
 def merge_scores(a: Any, b: Any) -> str:
-    aa = parse_scores(a)
-    bb = parse_scores(b)
-    n = max(len(aa), len(bb))
+    return merge_many_scores([a, b])
+
+
+def merge_many_scores(values: list[Any]) -> str:
+    parsed = [parse_scores(value) for value in values]
+    n = max((len(scores) for scores in parsed), default=0)
     merged = []
     for i in range(n):
-        vals = []
-        if i < len(aa) and aa[i] is not None:
-            vals.append(float(aa[i]))
-        if i < len(bb) and bb[i] is not None:
-            vals.append(float(bb[i]))
+        vals = [
+            float(scores[i])
+            for scores in parsed
+            if i < len(scores) and scores[i] is not None
+        ]
         if not vals:
             merged.append("-")
         else:
@@ -89,41 +96,67 @@ def read_pair(a_path: Path, b_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def build_consensus(a: pd.DataFrame, b: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    out = a.copy()
+    return build_multi_consensus([a, b], ["a", "b"])
+
+
+def build_multi_consensus(
+    frames: list[pd.DataFrame],
+    annotator_ids: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if len(frames) < 2:
+        raise ValueError("Consensus requires at least two annotators.")
+    if len(frames) != len(annotator_ids):
+        raise ValueError("Frame and annotator ID counts do not match.")
+    row_count = len(frames[0])
+    if any(len(frame) != row_count for frame in frames):
+        raise ValueError("All annotator frames must contain the same rows.")
+
+    out = frames[0].copy()
     disagreements = []
 
     for idx in range(len(out)):
-        row_diff = {"row": idx, "video_id": str(a.at[idx, "video_id"]) if "video_id" in a.columns else str(idx)}
+        row_diff = {
+            "row": idx,
+            "video_id": (
+                str(frames[0].at[idx, "video_id"])
+                if "video_id" in frames[0].columns
+                else str(idx)
+            ),
+        }
 
         for col in UNION_LABEL_COLUMNS:
-            if col not in out.columns or col not in b.columns:
+            if any(col not in frame.columns for frame in frames):
                 continue
-            av = a.at[idx, col]
-            bv = b.at[idx, col]
-            merged = union_labels(av, bv)
+            values = [frame.at[idx, col] for frame in frames]
+            merged = union_many_labels(values)
             out.at[idx, col] = merged
-            if set(split_labels(av)) != set(split_labels(bv)):
-                row_diff[f"{col}_a"] = av
-                row_diff[f"{col}_b"] = bv
+            label_sets = [set(split_labels(value)) for value in values]
+            if any(value != label_sets[0] for value in label_sets[1:]):
+                for annotator_id, value in zip(annotator_ids, values):
+                    row_diff[f"{col}_{annotator_id}"] = value
                 row_diff[f"{col}_consensus"] = merged
 
         for col in SEG_SCORE_COLUMNS:
-            if col not in out.columns or col not in b.columns:
+            if any(col not in frame.columns for frame in frames):
                 continue
-            av = a.at[idx, col]
-            bv = b.at[idx, col]
-            merged = merge_scores(av, bv)
+            values = [frame.at[idx, col] for frame in frames]
+            merged = merge_many_scores(values)
             out.at[idx, col] = merged
-            if parse_scores(av) != parse_scores(bv):
-                row_diff[f"{col}_a"] = av
-                row_diff[f"{col}_b"] = bv
+            parsed = [parse_scores(value) for value in values]
+            if any(value != parsed[0] for value in parsed[1:]):
+                for annotator_id, value in zip(annotator_ids, values):
+                    row_diff[f"{col}_{annotator_id}"] = value
                 row_diff[f"{col}_consensus"] = merged
 
         if len(row_diff) > 2:
             disagreements.append(row_diff)
 
     report = pd.DataFrame(disagreements)
-    out["annotator_merge_note"] = "emotion/style/usage_scene=union; segment_scores=mean; vocal_presence/genre kept from annotator A"
+    out["annotator_merge_note"] = (
+        "emotion/style/usage_scene=union across all annotators; "
+        "segment_scores=mean across all annotators; "
+        f"vocal_presence/genre kept from {annotator_ids[0]}"
+    )
     return out, report
 
 

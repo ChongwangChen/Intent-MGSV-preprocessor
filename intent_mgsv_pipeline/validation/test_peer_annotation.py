@@ -146,5 +146,53 @@ class PeerAnnotationTests(unittest.TestCase):
         self.assertEqual(result["seg_scores_3"], "3/4/3/4")
 
 
+    def test_consensus_supports_multiple_peer_annotators(self) -> None:
+        peer_values = {
+            "annotator_a": {
+                "emotion": ["peer-emotion-a"],
+                "style": ["peer-style-a"],
+                "usage_scene": ["peer-scene-a"],
+                "seg_scores_3": ["2", "4", "2", "4"],
+                "seg_scores_5": ["2", "4", "2", "4", "2", "4"],
+            },
+            "annotator_b": {
+                "emotion": ["peer-emotion-b"],
+                "style": ["peer-style-b"],
+                "usage_scene": ["peer-scene-b"],
+                "seg_scores_3": ["5", "3", "5", "3"],
+                "seg_scores_5": ["5", "3", "5", "3", "5", "3"],
+            },
+        }
+        for annotator_id, values in peer_values.items():
+            claim_next(self.db_path, annotator_id)
+            completed, missing = complete_peer_annotation(
+                self.db_path,
+                annotator_id,
+                "video-1",
+                **values,
+            )
+            self.assertTrue(completed)
+            self.assertEqual(missing, [])
+
+        out_path = Path(self.temp_dir.name) / "multi-consensus.xlsx"
+        summary = export_consensus(
+            self.db_path,
+            out_path,
+            peer_ids=["annotator_a", "annotator_b"],
+        )
+        self.assertEqual(
+            summary["annotator_ids"],
+            ["owner", "annotator_a", "annotator_b"],
+        )
+        import pandas as pd
+
+        result = pd.read_excel(out_path, keep_default_na=False).iloc[0]
+        self.assertIn("peer-emotion-a", result["emotion"])
+        self.assertIn("peer-emotion-b", result["emotion"])
+        self.assertIn("peer-style-a", result["style"])
+        self.assertIn("peer-scene-b", result["usage_scene"])
+        self.assertEqual(result["seg_scores_3"], "3.67/3.67/3.67/3.67")
+
+
 if __name__ == "__main__":
     unittest.main()

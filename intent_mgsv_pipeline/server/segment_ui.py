@@ -13,6 +13,32 @@ from intent_mgsv_pipeline.server.peer_annotation import (
 
 
 MAX_SCORE_SLOTS = 12
+FLOATING_VIDEO_CLASS = "mgsv-segment-mini-video"
+FLOATING_VIDEO_STYLE = f"""
+<style>
+video.{FLOATING_VIDEO_CLASS} {{
+    position: fixed !important;
+    top: 14px !important;
+    right: 14px !important;
+    width: min(380px, calc(100vw - 28px)) !important;
+    height: auto !important;
+    max-height: 44vh !important;
+    z-index: 9999 !important;
+    object-fit: contain !important;
+    background: #000 !important;
+    border-radius: 6px !important;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45) !important;
+}}
+@media (max-width: 640px) {{
+    video.{FLOATING_VIDEO_CLASS} {{
+        top: 8px !important;
+        right: 8px !important;
+        width: calc(100vw - 16px) !important;
+        max-height: 38vh !important;
+    }}
+}}
+</style>
+"""
 
 
 def _number(value: Any) -> float | None:
@@ -65,7 +91,7 @@ def segment_schemes(
         return _bounds([], duration), "分镜点不在视频时间范围内，按整段评分", None
 
     bounds_a = _bounds(points_a, duration)
-    caption = f"方案 A：{len(bounds_a)} 段"
+    caption = f"方案 A（Top-3 分镜点）：{len(bounds_a)} 段"
 
     raw_b = str(row.get("shot_points_5", "") or "").strip()
     bounds_b = None
@@ -106,6 +132,7 @@ def _play_button(
     script = (
         f"const video=document.querySelector('{selector}');"
         "if(video){"
+        f"video.classList.add('{FLOATING_VIDEO_CLASS}');"
         f"video.currentTime={start:.3f};video.play();{stop}"
         "}"
     )
@@ -118,6 +145,38 @@ def _play_button(
     )
 
 
+def _mini_player_controls(elem_id: str) -> str:
+    selector = html.escape(f"#{elem_id} video", quote=True)
+    close_script = (
+        f"const video=document.querySelector('{selector}');"
+        "if(video){"
+        f"video.classList.remove('{FLOATING_VIDEO_CLASS}');"
+        "if(document.pictureInPictureElement===video){"
+        "document.exitPictureInPicture();}"
+        "}"
+    )
+    pip_script = (
+        f"const video=document.querySelector('{selector}');"
+        "if(video&&video.requestPictureInPicture){"
+        "if(document.pictureInPictureElement===video){"
+        "document.exitPictureInPicture();"
+        "}else{video.requestPictureInPicture();}"
+        "}"
+    )
+    button_style = (
+        "margin:3px;padding:6px 10px;border:1px solid #888;"
+        "border-radius:6px;background:transparent;cursor:pointer"
+    )
+    return (
+        '<div style="margin-bottom:8px">'
+        f'<button type="button" onclick="{close_script}" '
+        f'style="{button_style}">关闭小窗</button>'
+        f'<button type="button" onclick="{pip_script}" '
+        f'style="{button_style}">浏览器画中画</button>'
+        "</div>"
+    )
+
+
 def segment_html(
     row: dict[str, Any],
     *,
@@ -127,14 +186,21 @@ def segment_html(
     if not bounds_a:
         return f'<p style="color:#b45309">{html.escape(caption)}</p>'
 
-    chunks = [f"<p><strong>{html.escape(caption)}</strong></p><div>"]
+    chunks = [
+        FLOATING_VIDEO_STYLE,
+        _mini_player_controls(video_elem_id),
+        f"<p><strong>{html.escape(caption)}</strong></p><div>",
+    ]
     chunks.extend(
         _play_button(video_elem_id, "A", index, start, end)
         for index, (start, end) in enumerate(bounds_a, start=1)
     )
     chunks.append("</div>")
     if bounds_b:
-        chunks.append(f"<p><strong>方案 B：{len(bounds_b)} 段</strong></p><div>")
+        chunks.append(
+            f"<p><strong>方案 B（Top-5 分镜点）："
+            f"{len(bounds_b)} 段</strong></p><div>"
+        )
         chunks.extend(
             _play_button(video_elem_id, "B", index, start, end)
             for index, (start, end) in enumerate(bounds_b, start=1)

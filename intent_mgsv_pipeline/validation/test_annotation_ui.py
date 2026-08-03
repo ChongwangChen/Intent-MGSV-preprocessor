@@ -8,7 +8,11 @@ from intent_mgsv_pipeline.server.annotation_options import (
     split_group_values,
 )
 from intent_mgsv_pipeline.server.owner_annotation import normalize_sync
-from intent_mgsv_pipeline.server.segment_ui import segment_schemes
+from intent_mgsv_pipeline.server.segment_ui import (
+    FLOATING_VIDEO_CLASS,
+    segment_html,
+    segment_schemes,
+)
 from intent_mgsv_pipeline.server.shot_detection import build_shot_fields
 
 
@@ -48,6 +52,23 @@ class AnnotationUiTests(unittest.TestCase):
             bounds_b,
             [(0.0, 2.0), (2.0, 5.0), (5.0, 9.0), (9.0, 12.0)],
         )
+
+    def test_segment_player_labels_schemes_and_opens_mini_video(self) -> None:
+        markup = segment_html(
+            {
+                "sync_level": "Yes",
+                "duration": 12,
+                "shot_points_3": "3/8",
+                "shot_points_5": "2/5/9",
+            },
+            video_elem_id="owner-video",
+        )
+
+        self.assertIn("Top-3", markup)
+        self.assertIn("Top-5", markup)
+        self.assertIn(FLOATING_VIDEO_CLASS, markup)
+        self.assertIn("关闭小窗", markup)
+        self.assertIn("浏览器画中画", markup)
 
     def test_grouped_values_round_trip_to_original_field(self) -> None:
         groups = split_group_values("欢乐/神秘/伤感", EMOTION_GROUPS)

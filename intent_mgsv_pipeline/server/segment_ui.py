@@ -14,8 +14,7 @@ from intent_mgsv_pipeline.server.peer_annotation import (
 
 MAX_SCORE_SLOTS = 12
 FLOATING_VIDEO_CLASS = "mgsv-segment-mini-video"
-FLOATING_VIDEO_STYLE = f"""
-<style>
+SEGMENT_VIDEO_CSS = f"""
 video.{FLOATING_VIDEO_CLASS} {{
     position: fixed !important;
     top: 14px !important;
@@ -37,7 +36,6 @@ video.{FLOATING_VIDEO_CLASS} {{
         max-height: 38vh !important;
     }}
 }}
-</style>
 """
 
 
@@ -112,71 +110,6 @@ def _range_text(start: float, end: float | None) -> str:
     return f"{start:.1f}s - {end:.1f}s"
 
 
-def _play_button(
-    elem_id: str,
-    scheme: str,
-    index: int,
-    start: float,
-    end: float | None,
-) -> str:
-    selector = html.escape(f"#{elem_id} video", quote=True)
-    stop = (
-        "video.ontimeupdate=null;"
-        if end is None
-        else (
-            "video.ontimeupdate=function(){"
-            f"if(video.currentTime>={end:.3f}-0.05){{"
-            "video.pause();video.ontimeupdate=null;}}};"
-        )
-    )
-    script = (
-        f"const video=document.querySelector('{selector}');"
-        "if(video){"
-        f"video.classList.add('{FLOATING_VIDEO_CLASS}');"
-        f"video.currentTime={start:.3f};video.play();{stop}"
-        "}"
-    )
-    label = f"▶ {scheme}段{index}　{_range_text(start, end)}"
-    return (
-        f'<button type="button" onclick="{script}" '
-        'style="margin:3px;padding:6px 10px;border:1px solid #888;'
-        'border-radius:6px;background:transparent;cursor:pointer">'
-        f"{html.escape(label)}</button>"
-    )
-
-
-def _mini_player_controls(elem_id: str) -> str:
-    selector = html.escape(f"#{elem_id} video", quote=True)
-    close_script = (
-        f"const video=document.querySelector('{selector}');"
-        "if(video){"
-        f"video.classList.remove('{FLOATING_VIDEO_CLASS}');"
-        "if(document.pictureInPictureElement===video){"
-        "document.exitPictureInPicture();}"
-        "}"
-    )
-    pip_script = (
-        f"const video=document.querySelector('{selector}');"
-        "if(video&&video.requestPictureInPicture){"
-        "if(document.pictureInPictureElement===video){"
-        "document.exitPictureInPicture();"
-        "}else{video.requestPictureInPicture();}"
-        "}"
-    )
-    button_style = (
-        "margin:3px;padding:6px 10px;border:1px solid #888;"
-        "border-radius:6px;background:transparent;cursor:pointer"
-    )
-    return (
-        '<div style="margin-bottom:8px">'
-        f'<button type="button" onclick="{close_script}" '
-        f'style="{button_style}">关闭小窗</button>'
-        f'<button type="button" onclick="{pip_script}" '
-        f'style="{button_style}">浏览器画中画</button>'
-        "</div>"
-    )
-
-
 def segment_html(
     row: dict[str, Any],
     *,
@@ -186,27 +119,118 @@ def segment_html(
     if not bounds_a:
         return f'<p style="color:#b45309">{html.escape(caption)}</p>'
 
-    chunks = [
-        FLOATING_VIDEO_STYLE,
-        _mini_player_controls(video_elem_id),
-        f"<p><strong>{html.escape(caption)}</strong></p><div>",
-    ]
-    chunks.extend(
-        _play_button(video_elem_id, "A", index, start, end)
-        for index, (start, end) in enumerate(bounds_a, start=1)
-    )
-    chunks.append("</div>")
+    chunks = [f"<p><strong>{html.escape(caption)}</strong></p>"]
     if bounds_b:
         chunks.append(
             f"<p><strong>方案 B（Top-5 分镜点）："
-            f"{len(bounds_b)} 段</strong></p><div>"
+            f"{len(bounds_b)} 段</strong></p>"
         )
-        chunks.extend(
-            _play_button(video_elem_id, "B", index, start, end)
-            for index, (start, end) in enumerate(bounds_b, start=1)
-        )
-        chunks.append("</div>")
     return "".join(chunks)
+
+
+def segment_payload(row: dict[str, Any]) -> dict[str, list[dict[str, float | None]]]:
+    bounds_a, _, bounds_b = segment_schemes(row)
+    return {
+        "A": [
+            {"start": start, "end": end}
+            for start, end in bounds_a
+        ],
+        "B": [
+            {"start": start, "end": end}
+            for start, end in (bounds_b or [])
+        ],
+    }
+
+
+def _playback_button_updates(
+    bounds: list[tuple[float, float | None]],
+    scheme: str,
+) -> list[Any]:
+    updates = []
+    for index in range(MAX_SCORE_SLOTS):
+        if index < len(bounds):
+            start, end = bounds[index]
+            updates.append(
+                gr.update(
+                    visible=True,
+                    value=(
+                        f"播放 {scheme}段{index + 1} "
+                        f"({_range_text(start, end)})"
+                    ),
+                )
+            )
+        else:
+            updates.append(
+                gr.update(
+                    visible=False,
+                    value=f"播放 {scheme}段{index + 1}",
+                )
+            )
+    return updates
+
+
+def segment_playback_updates(row: dict[str, Any]) -> tuple[Any, ...]:
+    bounds_a, _, bounds_b = segment_schemes(row)
+    return (
+        segment_payload(row),
+        *_playback_button_updates(bounds_a, "A"),
+        *_playback_button_updates(bounds_b or [], "B"),
+    )
+
+
+def segment_play_js(
+    video_elem_id: str,
+    scheme: str,
+    index: int,
+) -> str:
+    selector = f"#{video_elem_id} video"
+    return f"""(segments) => {{
+        const item = segments && segments["{scheme}"]
+            ? segments["{scheme}"][{index}]
+            : null;
+        const video = document.querySelector("{selector}");
+        if (!item || !video) return;
+        video.classList.add("{FLOATING_VIDEO_CLASS}");
+        video.ontimeupdate = null;
+        video.currentTime = Number(item.start || 0);
+        const end = item.end;
+        if (end !== null && end !== undefined) {{
+            video.ontimeupdate = () => {{
+                if (video.currentTime >= Number(end) - 0.05) {{
+                    video.pause();
+                    video.ontimeupdate = null;
+                }}
+            }};
+        }}
+        const promise = video.play();
+        if (promise && promise.catch) promise.catch(() => {{}});
+    }}"""
+
+
+def segment_close_js(video_elem_id: str) -> str:
+    selector = f"#{video_elem_id} video"
+    return f"""() => {{
+        const video = document.querySelector("{selector}");
+        if (!video) return;
+        video.classList.remove("{FLOATING_VIDEO_CLASS}");
+        if (document.pictureInPictureElement === video) {{
+            document.exitPictureInPicture();
+        }}
+    }}"""
+
+
+def segment_pip_js(video_elem_id: str) -> str:
+    selector = f"#{video_elem_id} video"
+    return f"""() => {{
+        const video = document.querySelector("{selector}");
+        if (!video || !video.requestPictureInPicture) return;
+        if (document.pictureInPictureElement === video) {{
+            document.exitPictureInPicture();
+        }} else {{
+            const promise = video.requestPictureInPicture();
+            if (promise && promise.catch) promise.catch(() => {{}});
+        }}
+    }}"""
 
 
 def _score_updates_for_bounds(

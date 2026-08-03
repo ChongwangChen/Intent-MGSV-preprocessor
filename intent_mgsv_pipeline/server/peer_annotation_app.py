@@ -32,7 +32,12 @@ from intent_mgsv_pipeline.server.peer_annotation import (
 )
 from intent_mgsv_pipeline.server.segment_ui import (
     MAX_SCORE_SLOTS,
+    SEGMENT_VIDEO_CSS,
+    segment_close_js,
     segment_form_updates,
+    segment_pip_js,
+    segment_play_js,
+    segment_playback_updates,
 )
 
 
@@ -123,32 +128,54 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
 
         gr.Markdown("## 1. 分段契合度")
         segment_player = gr.HTML()
+        segment_data = gr.JSON(value={}, visible=False)
+        with gr.Row():
+            close_segment_video = gr.Button("关闭视频小窗", size="sm")
+            pip_segment_video = gr.Button("浏览器画中画", size="sm")
 
+        play_buttons_a: list[gr.Button] = []
         scores_a: list[gr.Radio] = []
         with gr.Accordion("方案 A 分段评分", open=True):
             for start in range(0, MAX_SCORE_SLOTS, 4):
                 with gr.Row():
-                    scores_a.extend(
-                        gr.Radio(
-                            SCORE_OPTIONS,
-                            label=f"A段{index + 1}",
-                            visible=False,
-                        )
-                        for index in range(start, start + 4)
-                    )
+                    for index in range(start, start + 4):
+                        with gr.Column(min_width=180):
+                            play_buttons_a.append(
+                                gr.Button(
+                                    f"播放 A段{index + 1}",
+                                    visible=False,
+                                    size="sm",
+                                )
+                            )
+                            scores_a.append(
+                                gr.Radio(
+                                    SCORE_OPTIONS,
+                                    label=f"A段{index + 1}",
+                                    visible=False,
+                                )
+                            )
 
+        play_buttons_b: list[gr.Button] = []
         scores_b: list[gr.Radio] = []
         with gr.Accordion("方案 B 分段评分", open=False):
             for start in range(0, MAX_SCORE_SLOTS, 4):
                 with gr.Row():
-                    scores_b.extend(
-                        gr.Radio(
-                            SCORE_OPTIONS,
-                            label=f"B段{index + 1}",
-                            visible=False,
-                        )
-                        for index in range(start, start + 4)
-                    )
+                    for index in range(start, start + 4):
+                        with gr.Column(min_width=180):
+                            play_buttons_b.append(
+                                gr.Button(
+                                    f"播放 B段{index + 1}",
+                                    visible=False,
+                                    size="sm",
+                                )
+                            )
+                            scores_b.append(
+                                gr.Radio(
+                                    SCORE_OPTIONS,
+                                    label=f"B段{index + 1}",
+                                    visible=False,
+                                )
+                            )
 
         gr.Markdown("## 2. 标签选择")
         with gr.Tabs():
@@ -164,6 +191,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
             *style_components,
             *scene_components,
         ]
+        playback_components = [*play_buttons_a, *play_buttons_b]
         score_components = [*scores_a, *scores_b]
 
         with gr.Row():
@@ -178,8 +206,10 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
             metadata,
             status,
             segment_player,
-            *group_components,
+            segment_data,
+            *playback_components,
             *score_components,
+            *group_components,
         ]
 
         def empty(
@@ -193,11 +223,16 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 "",
                 message,
                 "",
-                *([] for _ in group_components),
+                {},
+                *(
+                    gr.update(visible=False)
+                    for _ in playback_components
+                ),
                 *(
                     gr.update(visible=False, value=None)
                     for _ in score_components
                 ),
+                *([] for _ in group_components),
             )
 
         def present(
@@ -211,19 +246,21 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 f"剩余 {progress['remaining']} 条"
             )
             video_id = str(row["video_id"])
-            segment_outputs = segment_form_updates(
+            form_updates = segment_form_updates(
                 row,
                 video_elem_id="peer-video",
             )
+            playback_updates = segment_playback_updates(row)
             return (
                 annotator_id,
                 video_id,
                 _resolve_video(row),
                 _metadata(row),
                 message or f"正在标注：{video_id}  \n{progress_text}",
-                segment_outputs[0],
+                form_updates[0],
+                *playback_updates,
+                *form_updates[1:],
                 *_group_values(row),
-                *segment_outputs[1:],
             )
 
         def load_next(annotator_id: str) -> tuple[Any, ...]:
@@ -361,6 +398,34 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
             inputs=form_inputs,
             outputs=outputs,
         )
+        for index, button in enumerate(play_buttons_a):
+            button.click(
+                fn=None,
+                inputs=[segment_data],
+                js=segment_play_js("peer-video", "A", index),
+                queue=False,
+                show_progress="hidden",
+            )
+        for index, button in enumerate(play_buttons_b):
+            button.click(
+                fn=None,
+                inputs=[segment_data],
+                js=segment_play_js("peer-video", "B", index),
+                queue=False,
+                show_progress="hidden",
+            )
+        close_segment_video.click(
+            fn=None,
+            js=segment_close_js("peer-video"),
+            queue=False,
+            show_progress="hidden",
+        )
+        pip_segment_video.click(
+            fn=None,
+            js=segment_pip_js("peer-video"),
+            queue=False,
+            show_progress="hidden",
+        )
         for component in [*group_components, *score_components]:
             component.input(
                 save_current,
@@ -384,6 +449,7 @@ def main() -> None:
     app.launch(
         server_name=args.host,
         server_port=args.port,
+        css=SEGMENT_VIDEO_CSS,
         allowed_paths=[
             str(PATHS.project_root),
             str(PATHS.douk_download_root),

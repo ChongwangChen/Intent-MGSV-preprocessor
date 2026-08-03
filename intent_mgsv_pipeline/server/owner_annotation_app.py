@@ -42,7 +42,12 @@ from intent_mgsv_pipeline.server.peer_annotation import (
 from intent_mgsv_pipeline.server.peer_annotation_app import _resolve_video
 from intent_mgsv_pipeline.server.segment_ui import (
     MAX_SCORE_SLOTS,
+    SEGMENT_VIDEO_CSS,
+    segment_close_js,
     segment_form_updates,
+    segment_pip_js,
+    segment_play_js,
+    segment_playback_updates,
 )
 
 
@@ -56,7 +61,7 @@ OWNER_CSS = """
     object-fit: contain !important;
     background: #000;
 }
-"""
+""" + SEGMENT_VIDEO_CSS
 _SHOT_DETECTION_LOCK = threading.Lock()
 
 
@@ -240,32 +245,54 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                     label="方案 B 分镜点（视频秒数，可为空）",
                 )
         segment_player = gr.HTML()
+        segment_data = gr.JSON(value={}, visible=False)
+        with gr.Row():
+            close_segment_video = gr.Button("关闭视频小窗", size="sm")
+            pip_segment_video = gr.Button("浏览器画中画", size="sm")
 
+        play_buttons_a: list[gr.Button] = []
         scores_a: list[gr.Radio] = []
         with gr.Accordion("方案 A 分段评分", open=True):
             for start in range(0, MAX_SCORE_SLOTS, 4):
                 with gr.Row():
-                    scores_a.extend(
-                        gr.Radio(
-                            SCORE_OPTIONS,
-                            label=f"A段{index + 1}",
-                            visible=False,
-                        )
-                        for index in range(start, start + 4)
-                    )
+                    for index in range(start, start + 4):
+                        with gr.Column(min_width=180):
+                            play_buttons_a.append(
+                                gr.Button(
+                                    f"播放 A段{index + 1}",
+                                    visible=False,
+                                    size="sm",
+                                )
+                            )
+                            scores_a.append(
+                                gr.Radio(
+                                    SCORE_OPTIONS,
+                                    label=f"A段{index + 1}",
+                                    visible=False,
+                                )
+                            )
 
+        play_buttons_b: list[gr.Button] = []
         scores_b: list[gr.Radio] = []
         with gr.Accordion("方案 B 分段评分", open=False):
             for start in range(0, MAX_SCORE_SLOTS, 4):
                 with gr.Row():
-                    scores_b.extend(
-                        gr.Radio(
-                            SCORE_OPTIONS,
-                            label=f"B段{index + 1}",
-                            visible=False,
-                        )
-                        for index in range(start, start + 4)
-                    )
+                    for index in range(start, start + 4):
+                        with gr.Column(min_width=180):
+                            play_buttons_b.append(
+                                gr.Button(
+                                    f"播放 B段{index + 1}",
+                                    visible=False,
+                                    size="sm",
+                                )
+                            )
+                            scores_b.append(
+                                gr.Radio(
+                                    SCORE_OPTIONS,
+                                    label=f"B段{index + 1}",
+                                    visible=False,
+                                )
+                            )
 
         gr.Markdown("## 3. 音乐属性")
         with gr.Row():
@@ -289,6 +316,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
             *style_components,
             *scene_components,
         ]
+        playback_components = [*play_buttons_a, *play_buttons_b]
         score_components = [*scores_a, *scores_b]
 
         with gr.Row():
@@ -312,9 +340,11 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
             vocal_presence,
             genre,
             segment_player,
+            segment_data,
+            *playback_components,
+            *score_components,
             shot_status,
             *group_components,
-            *score_components,
         ]
 
         def empty(message: str) -> tuple[Any, ...]:
@@ -331,12 +361,17 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 None,
                 "",
                 "",
-                "",
-                *([] for _ in group_components),
+                {},
+                *(
+                    gr.update(visible=False)
+                    for _ in playback_components
+                ),
                 *(
                     gr.update(visible=False, value=None)
                     for _ in score_components
                 ),
+                "",
+                *([] for _ in group_components),
             )
 
         def present(
@@ -348,10 +383,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 f"进度：{progress['completed']}/{progress['total']}，"
                 f"剩余 {progress['remaining']} 条"
             )
-            segment_outputs = segment_form_updates(
-                row,
-                video_elem_id="owner-video",
-            )
+            segment_outputs = render_segment_updates(row)
             return (
                 str(row["video_id"]),
                 row.get("duration") or row.get("video_total_duration") or 0,
@@ -366,10 +398,9 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 if row.get("vocal_presence") in VOCAL_OPTIONS
                 else None,
                 row.get("genre") or "",
-                segment_outputs[0],
+                *segment_outputs,
                 "",
                 *_group_values(row),
-                *segment_outputs[1:],
             )
 
         def load_next() -> tuple[Any, ...]:
@@ -386,6 +417,18 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
         style_count = len(STYLE_GROUPS)
         scene_count = len(SCENE_GROUPS)
         group_count = len(group_components)
+
+        def render_segment_updates(row: dict[str, Any]) -> tuple[Any, ...]:
+            form_updates = segment_form_updates(
+                row,
+                video_elem_id="owner-video",
+            )
+            playback_updates = segment_playback_updates(row)
+            return (
+                form_updates[0],
+                *playback_updates,
+                *form_updates[1:],
+            )
 
         def unpack_values(values: tuple[Any, ...]) -> tuple[
             list[str],
@@ -521,7 +564,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
             points_5: Any,
             *score_values: Any,
         ) -> tuple[Any, ...]:
-            return segment_form_updates(
+            return render_segment_updates(
                 {
                     "duration": duration,
                     "sync_level": sync_value,
@@ -533,8 +576,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                     "seg_scores_5": join_scores(
                         score_values[MAX_SCORE_SLOTS:]
                     ),
-                },
-                video_elem_id="owner-video",
+                }
             )
 
         def detect_current_shots(
@@ -545,8 +587,14 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 gr.update(),
                 gr.update(),
                 gr.update(),
-                gr.update(),
-                *(gr.update() for _ in score_components),
+                *(
+                    gr.update()
+                    for _ in range(
+                        2
+                        + len(playback_components)
+                        + len(score_components)
+                    )
+                ),
             )
             if not video_id:
                 return ("当前没有可检测的视频。", *noop)
@@ -562,10 +610,7 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 row = get_annotation_record(db_path, owner_id, video_id)
                 if row is None:
                     raise RuntimeError("检测完成，但无法重新读取数据库记录")
-                segment_outputs = segment_form_updates(
-                    row,
-                    video_elem_id="owner-video",
-                )
+                segment_outputs = render_segment_updates(row)
                 detected = int(payload.get("detected_count") or 0)
                 message = (
                     f"分镜检测完成：检测到 {detected} 个有效转场点；"
@@ -601,7 +646,12 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
             shot_points_5,
             *score_components,
         ]
-        segment_refresh_outputs = [segment_player, *score_components]
+        segment_refresh_outputs = [
+            segment_player,
+            segment_data,
+            *playback_components,
+            *score_components,
+        ]
         for component in [sync_level, shot_points_3, shot_points_5]:
             component.change(
                 refresh_segments,
@@ -618,8 +668,39 @@ def build_app(db_path: Path, owner_id: str = "owner") -> gr.Blocks:
                 shot_points_3,
                 shot_points_5,
                 segment_player,
+                segment_data,
+                *playback_components,
                 *score_components,
             ],
+        )
+
+        for index, button in enumerate(play_buttons_a):
+            button.click(
+                fn=None,
+                inputs=[segment_data],
+                js=segment_play_js("owner-video", "A", index),
+                queue=False,
+                show_progress="hidden",
+            )
+        for index, button in enumerate(play_buttons_b):
+            button.click(
+                fn=None,
+                inputs=[segment_data],
+                js=segment_play_js("owner-video", "B", index),
+                queue=False,
+                show_progress="hidden",
+            )
+        close_segment_video.click(
+            fn=None,
+            js=segment_close_js("owner-video"),
+            queue=False,
+            show_progress="hidden",
+        )
+        pip_segment_video.click(
+            fn=None,
+            js=segment_pip_js("owner-video"),
+            queue=False,
+            show_progress="hidden",
         )
 
         for component in [

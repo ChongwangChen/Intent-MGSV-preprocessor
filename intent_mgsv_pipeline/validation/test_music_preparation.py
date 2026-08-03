@@ -19,7 +19,9 @@ from intent_mgsv_pipeline.runtime_config import RuntimePaths
 from intent_mgsv_pipeline.server.assignment import claim_next
 from intent_mgsv_pipeline.server.db import connect, init_db
 from intent_mgsv_pipeline.server.music_review import confirm_music_review
+from intent_mgsv_pipeline.server.music_review import claim_next_music_review
 from intent_mgsv_pipeline.server.music_review import music_review_progress
+from intent_mgsv_pipeline.server.music_review import reject_music_review
 from intent_mgsv_pipeline.server.music_review import realign_music_review
 
 
@@ -360,6 +362,69 @@ class MusicPreparationTests(unittest.TestCase):
         self.assertEqual(row["song_offset"], 8.25)
         self.assertEqual(row["video_audio_start"], 0.5)
         self.assertEqual(row["aligned_duration"], 19.5)
+
+    def test_reprocessed_alignment_rejection_returns_to_music_review(self) -> None:
+        video = self.paths.douk_download_root / "video-return.mp4"
+        video.write_bytes(b"video")
+        song = self.paths.full_songs_dir / "song-return.mp3"
+        song.write_bytes(b"x" * 2048)
+        with connect(self.db_path) as conn:
+            video_db_id = conn.execute(
+                """
+                INSERT INTO videos(video_id, video_path, duration, row_json)
+                VALUES (?, ?, 20, '{}')
+                """,
+                (video.name, str(video)),
+            ).lastrowid
+            song_db_id = conn.execute(
+                """
+                INSERT INTO songs(title, artist, full_song_path, row_json)
+                VALUES ('Song', 'Artist', ?, '{}')
+                """,
+                (str(song),),
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO music_preparations(
+                    video_id, song_id, full_song_path, song_offset,
+                    aligned_duration, match_score, status
+                )
+                VALUES (?, ?, ?, 2.0, 20.0, 0.35, 'needs_review')
+                """,
+                (video_db_id, song_db_id, str(song)),
+            )
+
+        claimed = claim_next_music_review(self.db_path, "owner")
+        self.assertEqual(claimed["video_id"], video.name)
+        ok, _ = reject_music_review(
+            self.db_path,
+            "owner",
+            video.name,
+            reason="alignment_rejected",
+        )
+        self.assertTrue(ok)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE music_preparations
+                SET status='ready_for_review', song_offset=7.5, match_score=0.8
+                WHERE video_id=?
+                """,
+                (video_db_id,),
+            )
+
+        reclaimed = claim_next_music_review(self.db_path, "owner")
+        self.assertEqual(reclaimed["video_id"], video.name)
+        with connect(self.db_path) as conn:
+            review = conn.execute(
+                """
+                SELECT status
+                FROM song_reviews
+                WHERE video_id=? AND reviewer_id='owner'
+                """,
+                (video_db_id,),
+            ).fetchone()
+        self.assertEqual(review["status"], "in_progress")
 
     def test_standalone_preparation_skips_existing_dataset_by_default(self) -> None:
         video = self.paths.douk_download_root / "existing.mp4"

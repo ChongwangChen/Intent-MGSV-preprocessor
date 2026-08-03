@@ -134,7 +134,13 @@ def claim_next_music_review(
                 _review_query()
                 + """
                 WHERE p.status IN ('ready_for_review', 'needs_review')
-                  AND r.video_id IS NULL
+                  AND (
+                      r.video_id IS NULL
+                      OR r.status IN (
+                          'alignment_rejected',
+                          'song_rejected'
+                      )
+                  )
                   AND v.deleted_at IS NULL
                 ORDER BY
                     CASE p.status WHEN 'ready_for_review' THEN 0 ELSE 1 END,

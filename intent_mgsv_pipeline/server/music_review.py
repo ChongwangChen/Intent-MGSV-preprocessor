@@ -7,6 +7,7 @@ from typing import Any
 
 from intent_mgsv_pipeline.music_preparation.alignment import align_video_to_song
 from intent_mgsv_pipeline.runtime_config import PATHS
+from intent_mgsv_pipeline.server.owner_annotation import owner_required_missing
 from intent_mgsv_pipeline.server.db import (
     DEFAULT_DB,
     connect,
@@ -432,7 +433,7 @@ def confirm_music_review(
             (row["id"], owner_id),
         ).fetchone()
         if annotation is None:
-            conn.execute(
+            annotation_id = conn.execute(
                 """
                 INSERT INTO annotations(
                     video_id, song_id, annotator_id, music_start, music_end,
@@ -449,8 +450,9 @@ def confirm_music_review(
                     final_genre,
                     row["match_score"],
                 ),
-            )
+            ).lastrowid
         else:
+            annotation_id = annotation["id"]
             conn.execute(
                 """
                 UPDATE annotations
@@ -468,6 +470,23 @@ def confirm_music_review(
                     annotation["id"],
                 ),
             )
+        annotation_row = conn.execute(
+            "SELECT * FROM annotations WHERE id=?",
+            (annotation_id,),
+        ).fetchone()
+        automatically_completed = bool(
+            annotation_row is not None
+            and not owner_required_missing(dict(annotation_row))
+        )
+        if automatically_completed:
+            conn.execute(
+                """
+                UPDATE annotations
+                SET status='completed', updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (annotation_id,),
+            )
         log_event(
             conn,
             "music_review_confirmed",
@@ -478,6 +497,7 @@ def confirm_music_review(
                 "song_offset": corrected_offset,
                 "genre": final_genre,
                 "owner_id": owner_id,
+                "annotation_completed": automatically_completed,
             },
         )
     return True, "Confirmed."

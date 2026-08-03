@@ -291,6 +291,73 @@ class MusicPreparationTests(unittest.TestCase):
         claimed = claim_next(self.db_path, "annotator_b")
         self.assertEqual(claimed["video_id"], video.name)
 
+    def test_music_confirmation_completes_existing_fully_labeled_owner_row(
+        self,
+    ) -> None:
+        video = self.paths.douk_download_root / "video-labeled.mp4"
+        video.write_bytes(b"video")
+        song = self.paths.full_songs_dir / "song-labeled.mp3"
+        song.write_bytes(b"x" * 2048)
+        with connect(self.db_path) as conn:
+            video_db_id = conn.execute(
+                """
+                INSERT INTO videos(video_id, video_path, duration, row_json)
+                VALUES (?, ?, 15, '{}')
+                """,
+                (video.name, str(video)),
+            ).lastrowid
+            song_db_id = conn.execute(
+                """
+                INSERT INTO songs(title, artist, full_song_path, row_json)
+                VALUES ('Song', 'Artist', ?, '{}')
+                """,
+                (str(song),),
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO music_preparations(
+                    video_id, song_id, recognized_title, recognized_artist,
+                    full_song_path, song_offset, aligned_duration, match_score,
+                    status
+                )
+                VALUES (?, ?, 'Song', 'Artist', ?, 2.0, 15.0, 0.8,
+                        'ready_for_review')
+                """,
+                (video_db_id, song_db_id, str(song)),
+            )
+            conn.execute(
+                """
+                INSERT INTO annotations(
+                    video_id, annotator_id, sync_level, vocal_presence, genre,
+                    emotion, style, usage_scene, seg_scores_3, status, row_json
+                )
+                VALUES (?, 'owner', 'No', 'Full', 'Pop', '愉悦', '电影感',
+                        '日常Vlog', '4', 'in_progress', '{}')
+                """,
+                (video_db_id,),
+            )
+
+        ok, _ = confirm_music_review(
+            self.db_path,
+            "owner",
+            video.name,
+            corrected_offset=2.25,
+            final_genre="Pop",
+        )
+
+        self.assertTrue(ok)
+        with connect(self.db_path) as conn:
+            annotation = conn.execute(
+                """
+                SELECT status, song_verified
+                FROM annotations
+                WHERE video_id=? AND annotator_id='owner'
+                """,
+                (video_db_id,),
+            ).fetchone()
+        self.assertEqual(annotation["song_verified"], "Yes")
+        self.assertEqual(annotation["status"], "completed")
+
     def test_current_review_can_be_realigned_without_downloading_again(self) -> None:
         video = self.paths.douk_download_root / "video-realign.mp4"
         video.write_bytes(b"video")

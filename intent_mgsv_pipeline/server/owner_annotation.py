@@ -18,6 +18,7 @@ from intent_mgsv_pipeline.server.peer_annotation import (
     parse_points,
     parse_score_slots,
 )
+from intent_mgsv_pipeline.server.verification import is_song_verified
 
 
 VOCAL_OPTIONS = ("None", "Partial", "Full")
@@ -48,12 +49,7 @@ def owner_required_missing(row: dict[str, Any]) -> list[str]:
         missing.append("vocal_presence")
     if not str(row.get("genre", "") or "").strip():
         missing.append("genre")
-    if str(row.get("song_verified", "") or "").strip().casefold() not in {
-        "yes",
-        "true",
-        "1",
-        "confirmed",
-    }:
+    if not is_song_verified(row.get("song_verified", "")):
         missing.append("song confirmation")
 
     sync = normalize_sync(row.get("sync_level"))

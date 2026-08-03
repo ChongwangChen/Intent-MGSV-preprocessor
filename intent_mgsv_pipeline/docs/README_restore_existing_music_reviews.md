@@ -79,7 +79,44 @@ deleted_orphan_song_files
 orphan_song_file_errors
 ```
 
-## 第四步：人工快速确认
+## 第四步：继承旧备份中已经确认的歌曲
+
+旧版 Excel/数据库可能使用中文 `是` 保存 `song_verified`。服务器现在会正确识别该
+值。对于已经进入 `needs_review` 的恢复记录，可以用恢复操作之前的 SQLite 备份
+作为确认依据。
+
+先 dry-run：
+
+```bash
+python -m intent_mgsv_pipeline.server.recover_legacy_music_confirmations \
+  --db "$MGSV_DB" \
+  --evidence-db outputs/server/backups/intent_mgsv_YYYYMMDD_HHMMSS.sqlite3
+```
+
+只有以下条件同时满足时才会计入 `ready`：
+
+```text
+备份中的 song_verified 是 Yes/是/已确认
+当前记录确实来自 restored_annotation
+视频 ID 相同
+歌曲 song_mid、文件名或标题歌手能够严格匹配
+新旧 offset 的差值不超过 0.25 秒
+Genre 存在
+```
+
+确认 dry-run 结果合理后执行：
+
+```bash
+python -m intent_mgsv_pipeline.server.recover_legacy_music_confirmations \
+  --db "$MGSV_DB" \
+  --evidence-db outputs/server/backups/intent_mgsv_YYYYMMDD_HHMMSS.sqlite3 \
+  --apply
+```
+
+备份里没有确认依据的最近新增歌曲、歌曲不一致或 offset 不一致的记录仍留在
+`7862`，必须人工核验。
+
+## 第五步：人工快速确认
 
 打开音乐核验页面 `7862`：
 
@@ -89,7 +126,7 @@ orphan_song_file_errors
 4. offset 不正确时使用精细重对齐，或手动修改后刷新试听。
 5. 确认后，原 owner 标签完整的记录会自动恢复为 `completed`。
 
-## 第五步：测试非主标注员
+## 第六步：测试非主标注员
 
 在 `7861` 使用测试 ID：
 

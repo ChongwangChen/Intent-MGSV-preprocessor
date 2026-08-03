@@ -176,7 +176,8 @@ def annotation_progress(
                   AND owner.annotator_id=?
                   AND owner.status='completed'
                   AND LOWER(COALESCE(owner.song_verified, '')) IN
-                      ('yes', 'true', '1', 'confirmed')
+                      ('yes', 'true', '1', 'confirmed',
+                       char(26159), char(24050, 30830, 35748))
             )
         )
     """
@@ -229,7 +230,8 @@ def owner_annotation_progress(
     verified = """
         v.deleted_at IS NULL
         AND LOWER(COALESCE(a.song_verified, '')) IN
-            ('yes', 'true', '1', 'confirmed')
+            ('yes', 'true', '1', 'confirmed',
+             char(26159), char(24050, 30830, 35748))
     """
     with connect(db_path) as conn:
         total = int(
@@ -285,7 +287,8 @@ def claim_next_owner(
               AND (aa.lease_until IS NULL OR aa.lease_until > ?)
               AND a.status!='completed'
               AND LOWER(COALESCE(a.song_verified, '')) IN
-                  ('yes', 'true', '1', 'confirmed')
+                  ('yes', 'true', '1', 'confirmed',
+                   char(26159), char(24050, 30830, 35748))
               AND v.deleted_at IS NULL
             ORDER BY aa.updated_at DESC
             LIMIT 1
@@ -304,7 +307,8 @@ def claim_next_owner(
                 WHERE v.deleted_at IS NULL
                   AND a.status!='completed'
                   AND LOWER(COALESCE(a.song_verified, '')) IN
-                      ('yes', 'true', '1', 'confirmed')
+                      ('yes', 'true', '1', 'confirmed',
+                       char(26159), char(24050, 30830, 35748))
                   AND (
                       aa.video_id IS NULL
                       OR aa.status!='in_progress'
@@ -377,7 +381,8 @@ def claim_next(
                         AND owner.annotator_id=?
                         AND owner.status='completed'
                         AND LOWER(COALESCE(owner.song_verified, '')) IN
-                            ('yes', 'true', '1', 'confirmed')
+                            ('yes', 'true', '1', 'confirmed',
+                             char(26159), char(24050, 30830, 35748))
                   )
               )
               AND v.deleted_at IS NULL
@@ -411,7 +416,8 @@ def claim_next(
                         AND owner.annotator_id=?
                         AND owner.status='completed'
                         AND LOWER(COALESCE(owner.song_verified, '')) IN
-                            ('yes', 'true', '1', 'confirmed')
+                            ('yes', 'true', '1', 'confirmed',
+                             char(26159), char(24050, 30830, 35748))
                   )
               )
             ORDER BY v.id

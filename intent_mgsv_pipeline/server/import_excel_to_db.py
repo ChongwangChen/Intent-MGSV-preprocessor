@@ -19,6 +19,7 @@ from intent_mgsv_pipeline.server.db import (
     scalar,
     text,
 )
+from intent_mgsv_pipeline.server.verification import is_song_verified
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -189,7 +190,11 @@ def import_excel(
                 )
                 db_video_id = int(cur.lastrowid)
 
-            status = "completed" if text(data.get("song_verified")).lower() in {"yes", "true", "1", "confirmed"} else "in_progress"
+            status = (
+                "completed"
+                if is_song_verified(data.get("song_verified"))
+                else "in_progress"
+            )
             conflict_action = (
                 """
                 ON CONFLICT(video_id, annotator_id) DO UPDATE SET

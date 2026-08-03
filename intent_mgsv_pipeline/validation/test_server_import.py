@@ -94,6 +94,25 @@ class ServerImportTests(unittest.TestCase):
         self.assertEqual(row["emotion"], "显式更新")
         self.assertEqual(row["music_start"], 3.0)
 
+    def test_chinese_song_confirmation_imports_as_completed(self) -> None:
+        self._write_source(emotion="Happy", music_start=1.0)
+        frame = pd.read_excel(self.excel_path, keep_default_na=False)
+        frame["song_verified"] = "\u662f"
+        frame.to_excel(self.excel_path, index=False)
+
+        import_excel(self.excel_path, self.db_path, "owner")
+
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT song_verified, status
+                FROM annotations
+                WHERE annotator_id='owner'
+                """
+            ).fetchone()
+        self.assertEqual(row["song_verified"], "\u662f")
+        self.assertEqual(row["status"], "completed")
+
     def test_incremental_import_preserves_existing_video_path(self) -> None:
         init_db(self.db_path)
         valid_path = self.root / "video-1.mp4"

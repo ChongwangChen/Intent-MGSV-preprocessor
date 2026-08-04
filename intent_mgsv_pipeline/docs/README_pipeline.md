@@ -13,6 +13,13 @@
 - [x] 建立 `datasets/` 板块，提供 Intent-MGSV 富字段读取器
 - [x] 建立 `baseline/` 板块，记录原 MGSV/MaDe 接入路径
 - [x] 跑通富字段 Dataset dry-run
+- [x] 定义 video/image/text 统一音乐 grounding 数据协议
+- [x] 生成图片与文字配乐采集模板
+- [x] 实现统一跨模态 RowDataset 与完整性检查
+- [x] 增加视频数据扩充漏斗审计报告
+- [x] 将现有 121 条清洗视频转换为统一 manifest，并通过真实文件校验
+- [ ] 将服务器后续新增正式导出增量合并到统一 manifest
+- [ ] 建立按 group_id/music_id 防泄漏的跨模态 split
 
 ## 已生成文件
 

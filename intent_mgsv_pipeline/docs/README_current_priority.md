@@ -166,3 +166,22 @@ seg_scores
 当前一句话目标：
 
 > 先让数据集变大、标注变稳、dataloader 读得准。
+
+## 七、2026-08 跨模态扩展
+
+当前新增执行路线：
+
+```text
+视频继续扩充 100 条，保持为主体
+图片配乐 30 条试点
+文字配乐 30 条试点
+统一 content_type=video/image/text 的 RowDataset
+通过字段和文件完整性检查后再扩大图片/文字规模
+```
+
+图片和文字共享 `music_start/music_end` grounding 目标，但不伪造视频时长、分镜点
+或分段评分。详细规范见：
+
+```text
+intent_mgsv_pipeline/docs/README_dataset_growth_and_multimodal.md
+```

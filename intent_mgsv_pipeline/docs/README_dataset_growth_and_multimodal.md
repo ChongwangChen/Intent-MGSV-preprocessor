@@ -142,7 +142,7 @@ vocal_presence
 
 ```text
 video -> content_path + 视频时长 + sync/shot/seg_scores
-image -> content_path + overall_score
+image -> content_path/content_paths + overall_score
 text  -> content_text + overall_score
 ```
 
@@ -160,9 +160,61 @@ text  -> content_text + overall_score
 
 - 优先使用自己拍摄、明确授权或许可允许研究使用的图片；
 - `content_id` 必须稳定且唯一；
-- `content_path` 指向原图；
+- 单图的 `content_path` 指向原图；
+- 多图作品用 `content_paths` 保存按展示顺序排列的 JSON 路径数组；
+- 多图作品的 `content_path` 指向第一张图，作为向后兼容的预览图；
 - `source/source_url` 记录来源和许可线索；
 - 同一图片的裁剪、滤镜版本使用相同 `group_id`，防止跨 split 泄漏。
+
+### 抖音图文集
+
+一个抖音图文集整体作为一个 `image` 样本，而不是将每张图拆成彼此无关的样本：
+
+```text
+sample_id = douyin_note_<作品ID>
+content_path = 第一张图
+content_paths = ["第1张", "第2张", ...]
+group_id = douyin_note_<作品ID>
+source_url = 原抖音 note 链接
+```
+
+DouK 下载的作品音频填写到 `source_audio_path`，仅用于识曲和核验。它通常是短原声，
+不能代替 grounding 所需的完整歌曲。识曲并下载完整歌曲后，另行填写：
+
+```text
+music_id
+full_song_path
+music_start
+music_end
+```
+
+从 DouK 下载目录和 `Download.xlsx` 自动生成待标注表：
+
+```bash
+python -m intent_mgsv_pipeline.data_collection.build_douyin_gallery_manifest \
+  --limit 5 \
+  --report outputs/intent_mgsv_dataset/pilot/douyin_gallery_pilot.report.json
+```
+
+生成：
+
+```text
+outputs/intent_mgsv_dataset/pilot/douyin_gallery_pilot.csv
+```
+
+2026-08-04 首次真实试运行结果：
+
+```text
+图文集：5
+图片总数：26
+各组图片数量：2 / 9 / 3 / 5 / 7
+DouK 元数据匹配：5/5
+带下载原声：4
+缺少下载原声：1
+```
+
+缺原声不等于样本无效。可以根据 DouK 元数据中的歌曲标题搜索完整歌曲，或者人工选择
+适合整组图文内容的完整歌曲。
 
 ### 文字
 

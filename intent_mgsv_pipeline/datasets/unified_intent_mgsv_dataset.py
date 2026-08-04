@@ -13,6 +13,7 @@ from intent_mgsv_pipeline.datasets.intent_mgsv_dataset import (
 from intent_mgsv_pipeline.schema.unified_sample_schema import (
     ValidationIssue,
     canonicalize_record,
+    parse_content_paths,
     validate_record,
 )
 
@@ -74,6 +75,16 @@ def _is_yes(value: Any) -> bool:
         "\u662f",
         "\u5df2\u786e\u8ba4",
     }
+
+
+def _content_paths(record: dict[str, Any]) -> list[str]:
+    if record["content_type"] == "image":
+        return parse_content_paths(
+            record.get("content_paths"),
+            fallback=record.get("content_path"),
+        )
+    path = str(record.get("content_path") or "").strip()
+    return [path] if path else []
 
 
 class UnifiedIntentMGSVRowDataset:
@@ -153,9 +164,9 @@ class UnifiedIntentMGSVRowDataset:
     ) -> list[ValidationIssue]:
         issues: list[ValidationIssue] = []
         sample_id = record["sample_id"] or "<missing>"
-        if record["content_type"] in {"video", "image"}:
+        for index, raw_path in enumerate(_content_paths(record), start=1):
             content_path = _resolve_path(
-                record["content_path"],
+                raw_path,
                 manifest_path=manifest_path,
                 data_root=self.data_root,
             )
@@ -163,11 +174,38 @@ class UnifiedIntentMGSVRowDataset:
                 issues.append(
                     ValidationIssue(
                         sample_id,
-                        "content_path",
+                        (
+                            "content_paths"
+                            if record["content_type"] == "image"
+                            else "content_path"
+                        ),
                         "content_file_missing",
-                        f"Content file not found: {content_path}",
+                        (
+                            f"Content file {index} not found: "
+                            f"{content_path}"
+                        ),
                     )
                 )
+        source_audio_path = _resolve_path(
+            record["source_audio_path"],
+            manifest_path=manifest_path,
+            data_root=self.data_root,
+        )
+        if (
+            str(record["source_audio_path"] or "").strip()
+            and (
+                source_audio_path is None
+                or not source_audio_path.is_file()
+            )
+        ):
+            issues.append(
+                ValidationIssue(
+                    sample_id,
+                    "source_audio_path",
+                    "source_audio_file_missing",
+                    f"Source audio file not found: {source_audio_path}",
+                )
+            )
         song_path = _resolve_path(
             record["full_song_path"],
             manifest_path=manifest_path,
@@ -194,8 +232,18 @@ class UnifiedIntentMGSVRowDataset:
         music_end = float(row["music_end"])
         center = ((music_start + music_end) / 2.0) / self.max_m_duration
         width = (music_end - music_start) / self.max_m_duration
-        content_path = _resolve_path(
-            row["content_path"],
+        content_paths = [
+            _resolve_path(
+                raw_path,
+                manifest_path=manifest_path,
+                data_root=self.data_root,
+            )
+            for raw_path in _content_paths(row)
+        ]
+        content_paths = [path for path in content_paths if path is not None]
+        content_path = content_paths[0] if content_paths else None
+        source_audio_path = _resolve_path(
+            row["source_audio_path"],
             manifest_path=manifest_path,
             data_root=self.data_root,
         )
@@ -218,11 +266,20 @@ class UnifiedIntentMGSVRowDataset:
             "content": {
                 "type": row["content_type"],
                 "path": str(content_path) if content_path else "",
+                "paths": [str(path) for path in content_paths],
+                "image_count": (
+                    len(content_paths)
+                    if row["content_type"] == "image"
+                    else 0
+                ),
                 "text": row["content_text"],
                 "duration": float(row["content_duration"]),
             },
             "music": {
                 "path": str(song_path) if song_path else "",
+                "source_audio_path": (
+                    str(source_audio_path) if source_audio_path else ""
+                ),
                 "title": row["song_title"],
                 "artist": row["song_artist"],
                 "genre": row["genre"],

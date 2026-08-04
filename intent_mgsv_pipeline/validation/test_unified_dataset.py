@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,9 +27,13 @@ class UnifiedIntentMGSVDatasetTests(unittest.TestCase):
         self.song = self.root / "song.mp3"
         self.video = self.root / "video.mp4"
         self.image = self.root / "image.jpg"
+        self.image_2 = self.root / "image_2.jpg"
+        self.source_audio = self.root / "source.mp3"
         self.song.write_bytes(b"song")
         self.video.write_bytes(b"video")
         self.image.write_bytes(b"image")
+        self.image_2.write_bytes(b"image 2")
+        self.source_audio.write_bytes(b"source audio")
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -66,6 +71,10 @@ class UnifiedIntentMGSVDatasetTests(unittest.TestCase):
         )
         image = self._base("image-1", "image")
         image["content_path"] = str(self.image)
+        image["content_paths"] = json.dumps(
+            [str(self.image), str(self.image_2)]
+        )
+        image["source_audio_path"] = str(self.source_audio)
         image["overall_score"] = 4
         text = self._base("text-1", "text")
         text["content_text"] = "A quiet street after rain."
@@ -87,6 +96,15 @@ class UnifiedIntentMGSVDatasetTests(unittest.TestCase):
         self.assertEqual(dataset[0]["rhythm"]["sync_level"], 1)
         self.assertEqual(dataset[0]["rhythm"]["seg_scores_3"], [4, 5, 3])
         self.assertEqual(dataset[1]["rhythm"]["sync_level"], 0)
+        self.assertEqual(dataset[1]["content"]["image_count"], 2)
+        self.assertEqual(
+            dataset[1]["content"]["paths"],
+            [str(self.image.resolve()), str(self.image_2.resolve())],
+        )
+        self.assertEqual(
+            dataset[1]["music"]["source_audio_path"],
+            str(self.source_audio.resolve()),
+        )
         self.assertEqual(dataset[2]["content"]["text"], "A quiet street after rain.")
         self.assertEqual(
             dataset[0]["grounding"]["target_center_width"],
@@ -145,6 +163,31 @@ class UnifiedIntentMGSVDatasetTests(unittest.TestCase):
         text_example = pd.read_csv(outputs["text_example"])
         self.assertEqual(text_example.loc[0, "content_type"], "text")
         self.assertTrue(text_example.loc[0, "content_text"])
+        image_example = pd.read_csv(outputs["image_example"])
+        self.assertEqual(
+            len(json.loads(image_example.loc[0, "content_paths"])),
+            2,
+        )
+
+    def test_multi_image_validation_checks_every_file(self) -> None:
+        row = self._base("image-missing", "image")
+        row["content_path"] = str(self.image)
+        row["content_paths"] = json.dumps(
+            [str(self.image), str(self.root / "missing.jpg")]
+        )
+        manifest = self.root / "missing-image.csv"
+        pd.DataFrame([row]).to_csv(manifest, index=False)
+
+        with self.assertRaises(DatasetValidationError) as raised:
+            UnifiedIntentMGSVRowDataset(
+                manifest,
+                validate_files=True,
+            )
+
+        self.assertIn(
+            "content_file_missing",
+            {issue.code for issue in raised.exception.issues},
+        )
 
     def test_build_unified_manifest_converts_legacy_video_table(self) -> None:
         row = self._base("legacy-video", "")

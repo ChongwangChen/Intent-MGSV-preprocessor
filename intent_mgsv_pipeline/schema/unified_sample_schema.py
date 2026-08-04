@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -12,9 +13,11 @@ UNIFIED_COLUMNS = (
     "content_type",
     "content_id",
     "content_path",
+    "content_paths",
     "content_text",
     "content_duration",
     "music_id",
+    "source_audio_path",
     "full_song_path",
     "music_start",
     "music_end",
@@ -61,6 +64,39 @@ def _number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if number == number else None
+
+
+def parse_content_paths(
+    value: Any,
+    *,
+    fallback: Any = "",
+) -> list[str]:
+    paths: list[str] = []
+    if isinstance(value, (list, tuple, set)):
+        candidates = list(value)
+    else:
+        text = _text(value)
+        candidates: list[Any] = []
+        if text:
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, list):
+                candidates = parsed
+            elif "||" in text:
+                candidates = text.split("||")
+            else:
+                candidates = [text]
+
+    for candidate in candidates:
+        path = _text(candidate)
+        if path and path not in paths:
+            paths.append(path)
+    fallback_path = _text(fallback)
+    if fallback_path and fallback_path not in paths:
+        paths.insert(0, fallback_path)
+    return paths
 
 
 def normalize_content_type(value: Any) -> str:
@@ -127,6 +163,12 @@ def canonicalize_record(row: Mapping[str, Any]) -> dict[str, Any]:
     if not content_path:
         source_field = "image_path" if content_type == "image" else "video_path"
         content_path = _text(raw.get(source_field))
+    content_paths = parse_content_paths(
+        raw.get("content_paths") or raw.get("image_paths"),
+        fallback=content_path if content_type == "image" else "",
+    )
+    if content_type == "image" and not content_path and content_paths:
+        content_path = content_paths[0]
     content_text = _text(
         raw.get("content_text")
         or raw.get("text_prompt")
@@ -159,6 +201,11 @@ def canonicalize_record(row: Mapping[str, Any]) -> dict[str, Any]:
             "content_type": content_type,
             "content_id": content_id,
             "content_path": content_path,
+            "content_paths": (
+                json.dumps(content_paths, ensure_ascii=False)
+                if content_paths
+                else ""
+            ),
             "content_text": content_text,
             "content_duration": (
                 _number(
@@ -169,6 +216,11 @@ def canonicalize_record(row: Mapping[str, Any]) -> dict[str, Any]:
                 or 0.0
             ),
             "music_id": music_id,
+            "source_audio_path": _text(
+                raw.get("source_audio_path")
+                or raw.get("douyin_audio_path")
+                or raw.get("clip_audio_path")
+            ),
             "full_song_path": song_path,
             "music_start": _number(raw.get("music_start")),
             "music_end": _number(raw.get("music_end")),
@@ -202,13 +254,20 @@ def validate_record(
         add("content_type", "invalid_content_type", "Expected video, image, or text.")
     if not _text(record.get("content_id")):
         add("content_id", "missing_content_id", "A stable content ID is required.")
-    if content_type in {"video", "image"} and not _text(
-        record.get("content_path")
-    ):
+    if content_type == "video" and not _text(record.get("content_path")):
         add(
             "content_path",
             "missing_content_path",
-            f"{content_type} samples require a content path.",
+            "Video samples require a content path.",
+        )
+    if content_type == "image" and not parse_content_paths(
+        record.get("content_paths"),
+        fallback=record.get("content_path"),
+    ):
+        add(
+            "content_paths",
+            "missing_content_path",
+            "Image samples require one or more ordered content paths.",
         )
     if content_type == "text" and not _text(record.get("content_text")):
         add(

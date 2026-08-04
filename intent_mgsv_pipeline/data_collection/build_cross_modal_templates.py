@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -53,6 +54,13 @@ def _example_frame(content_type: str) -> pd.DataFrame:
     )
     if content_type == "image":
         base["content_path"] = "data/images/image_example_001.jpg"
+        base["content_paths"] = json.dumps(
+            [
+                "data/images/image_example_001.jpg",
+                "data/images/image_example_002.jpg",
+            ],
+            ensure_ascii=False,
+        )
     else:
         base["content_text"] = (
             "A quiet city street after rain, with warm lights reflected "

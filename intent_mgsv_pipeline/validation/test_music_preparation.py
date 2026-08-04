@@ -217,6 +217,90 @@ class MusicPreparationTests(unittest.TestCase):
         self.assertEqual(row["match_score"], 0.12)
         self.assertIn("requires human review", row["error"])
 
+    def test_retry_after_song_rejection_skips_rejected_song_mid(self) -> None:
+        rejected = QQMusicCandidate(
+            song_mid="rejected-mid",
+            title="Song",
+            artist="Artist",
+            album="Rejected",
+            duration=180,
+            title_score=1.0,
+            artist_score=1.0,
+            match_score=1.0,
+        )
+        replacement = QQMusicCandidate(
+            song_mid="replacement-mid",
+            title="Song",
+            artist="Artist",
+            album="Replacement",
+            duration=180,
+            title_score=1.0,
+            artist_score=1.0,
+            match_score=1.0,
+        )
+        video = self.paths.douk_download_root / "video-rejected-song.mp4"
+        video.write_bytes(b"video")
+        song = self.paths.full_songs_dir / "replacement.mp3"
+        song.write_bytes(b"x" * 2048)
+        record = {
+            "video_id": video.name,
+            "video_path": str(video),
+            "song_title": "Song",
+            "song_artist": "Artist",
+            "video_total_duration": 20,
+        }
+        with connect(self.db_path) as conn:
+            video_db_id = conn.execute(
+                """
+                INSERT INTO videos(video_id, video_path, duration, row_json)
+                VALUES (?, ?, 20, '{}')
+                """,
+                (video.name, str(video)),
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO music_preparations(
+                    video_id, qq_song_mid, status, raw_json
+                )
+                VALUES (?, 'rejected-mid', 'needs_manual', '{}')
+                """,
+                (video_db_id,),
+            )
+
+        with (
+            patch(
+                "intent_mgsv_pipeline.music_preparation.pipeline.search_qqmusic",
+                return_value=[rejected, replacement],
+            ),
+            patch(
+                "intent_mgsv_pipeline.music_preparation.pipeline.download_qq_candidate",
+                return_value=(song, "qqmusic_test"),
+            ) as download,
+            patch(
+                "intent_mgsv_pipeline.music_preparation.pipeline.align_video_to_song",
+                return_value=AlignmentResult(
+                    4.5,
+                    0.0,
+                    0.9,
+                    4,
+                    "ready_for_review",
+                ),
+            ),
+            connect(self.db_path) as conn,
+        ):
+            status = prepare_record(
+                conn,
+                record,
+                video,
+                self.paths,
+                retry_failed=True,
+                fallback_sources=(),
+            )
+
+        self.assertEqual(status, "ready_for_review")
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual(download.call_args.args[0].song_mid, "replacement-mid")
+
     def test_human_confirmation_is_required_before_peer_annotation(self) -> None:
         video = self.paths.douk_download_root / "video-review.mp4"
         video.write_bytes(b"video")
@@ -460,6 +544,20 @@ class MusicPreparationTests(unittest.TestCase):
                 """,
                 (video_db_id, song_db_id, str(song)),
             )
+            conn.execute(
+                """
+                INSERT INTO annotations(
+                    video_id, song_id, annotator_id, sync_level,
+                    music_start, music_end, emotion, style, usage_scene,
+                    seg_scores_3, vocal_presence, genre, song_verified,
+                    status, row_json
+                )
+                VALUES (?, ?, 'owner', 'No', 2.0, 22.0, 'Happy',
+                        'Film', 'Vlog', '4', 'Full', 'Pop', 'Yes',
+                        'completed', '{}')
+                """,
+                (video_db_id, song_db_id),
+            )
 
         claimed = claim_next_music_review(self.db_path, "owner")
         self.assertEqual(claimed["video_id"], video.name)
@@ -471,6 +569,16 @@ class MusicPreparationTests(unittest.TestCase):
         )
         self.assertTrue(ok)
         with connect(self.db_path) as conn:
+            owner = conn.execute(
+                """
+                SELECT song_verified, status
+                FROM annotations
+                WHERE video_id=? AND annotator_id='owner'
+                """,
+                (video_db_id,),
+            ).fetchone()
+            self.assertEqual(owner["song_verified"], "")
+            self.assertEqual(owner["status"], "in_progress")
             conn.execute(
                 """
                 UPDATE music_preparations
@@ -479,6 +587,7 @@ class MusicPreparationTests(unittest.TestCase):
                 """,
                 (video_db_id,),
             )
+        self.assertIsNone(claim_next(self.db_path, "peer-after-rejection"))
 
         reclaimed = claim_next_music_review(self.db_path, "owner")
         self.assertEqual(reclaimed["video_id"], video.name)

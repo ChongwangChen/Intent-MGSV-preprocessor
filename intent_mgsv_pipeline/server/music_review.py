@@ -510,13 +510,19 @@ def reject_music_review(
     *,
     reason: str,
     note: str = "",
+    owner_id: str = "owner",
 ) -> tuple[bool, str]:
     if reason not in {"song_rejected", "alignment_rejected"}:
         return False, "Unknown rejection reason."
     init_db(db_path)
     with connect(db_path) as conn:
         row = conn.execute(
-            "SELECT id FROM videos WHERE video_id=? AND deleted_at IS NULL",
+            """
+            SELECT v.id, p.song_id
+            FROM videos v
+            LEFT JOIN music_preparations p ON p.video_id=v.id
+            WHERE v.video_id=? AND v.deleted_at IS NULL
+            """,
             (video_id,),
         ).fetchone()
         if row is None:
@@ -526,11 +532,12 @@ def reject_music_review(
         conn.execute(
             """
             INSERT INTO song_reviews(
-                video_id, reviewer_id, song_correct, alignment_correct,
-                note, status
+                video_id, reviewer_id, song_id, song_correct,
+                alignment_correct, note, status
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(video_id, reviewer_id) DO UPDATE SET
+                song_id=excluded.song_id,
                 song_correct=excluded.song_correct,
                 alignment_correct=excluded.alignment_correct,
                 note=excluded.note,
@@ -540,6 +547,7 @@ def reject_music_review(
             (
                 row["id"],
                 reviewer_id,
+                row["song_id"],
                 song_correct,
                 alignment_correct,
                 note.strip(),
@@ -557,12 +565,26 @@ def reject_music_review(
             """,
             (preparation_status, note.strip(), row["id"]),
         )
+        conn.execute(
+            """
+            UPDATE annotations
+            SET song_verified='', status='in_progress',
+                updated_at=CURRENT_TIMESTAMP
+            WHERE video_id=? AND annotator_id=?
+            """,
+            (row["id"], owner_id),
+        )
         log_event(
             conn,
             "music_review_rejected",
             actor=reviewer_id,
             target_type="video",
             target_id=video_id,
-            payload={"reason": reason, "note": note.strip()},
+            payload={
+                "reason": reason,
+                "note": note.strip(),
+                "owner_id": owner_id,
+                "peer_eligibility_revoked": True,
+            },
         )
     return True, "Rejection saved."

@@ -448,10 +448,19 @@ def prepare_record(
     except Exception as exc:
         search_results = []
         errors.append(str(exc))
+    rejected_song_mids: set[str] = set()
+    if current and current["status"] == "needs_manual":
+        rejected_mid = str(current["qq_song_mid"] or "").strip()
+        if rejected_mid:
+            rejected_song_mids.add(rejected_mid)
     accepted = [
         candidate
         for candidate in search_results
-        if candidate.song_mid and candidate_is_acceptable(candidate, bool(artist))
+        if (
+            candidate.song_mid
+            and candidate.song_mid not in rejected_song_mids
+            and candidate_is_acceptable(candidate, bool(artist))
+        )
     ][:3]
     deferred_review: tuple[
         QQMusicCandidate,

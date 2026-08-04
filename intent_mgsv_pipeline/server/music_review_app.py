@@ -243,6 +243,7 @@ def build_app(
                 video_id,
                 reason=reason,
                 note=review_note,
+                owner_id=owner_id,
             )
             return load_next(reviewer_id)
 

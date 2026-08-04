@@ -25,21 +25,20 @@ class DouyinGalleryManifestTests(unittest.TestCase):
             (folder / f"{folder.name}_1.jpeg").write_bytes(b"1")
             (folder / f"{folder.name}.mp3").write_bytes(b"audio")
             metadata = root / "Download.xlsx"
+            metadata_row = {
+                "\u4f5c\u54c1\u7c7b\u578b": "\u56fe\u96c6",
+                "\u4f5c\u54c1ID": 7484280271425080635,
+                "\u4f5c\u54c1\u63cf\u8ff0": "Description",
+                "\u4f5c\u54c1\u94fe\u63a5": (
+                    "https://www.douyin.com/note/7484280271425080635"
+                ),
+                "\u53d1\u5e03\u65f6\u95f4": "2025-01-02 03:04:05",
+                "\u8d26\u53f7\u6635\u79f0": "Tester",
+                "\u97f3\u4e50\u4f5c\u8005": "Artist",
+                "\u97f3\u4e50\u6807\u9898": "Song",
+            }
             pd.DataFrame(
-                [
-                    {
-                        "\u4f5c\u54c1\u7c7b\u578b": "\u56fe\u96c6",
-                        "\u4f5c\u54c1ID": 7484280271425080635,
-                        "\u4f5c\u54c1\u63cf\u8ff0": "Description",
-                        "\u4f5c\u54c1\u94fe\u63a5": (
-                            "https://www.douyin.com/note/7484280271425080635"
-                        ),
-                        "\u53d1\u5e03\u65f6\u95f4": "2025-01-02 03:04:05",
-                        "\u8d26\u53f7\u6635\u79f0": "Tester",
-                        "\u97f3\u4e50\u4f5c\u8005": "Artist",
-                        "\u97f3\u4e50\u6807\u9898": "Song",
-                    }
-                ]
+                [metadata_row, metadata_row]
             ).to_excel(metadata, index=False)
             output = root / "gallery.csv"
 

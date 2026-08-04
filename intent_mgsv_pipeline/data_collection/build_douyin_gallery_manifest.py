@@ -120,7 +120,27 @@ def _match_metadata(
         if (prefix := _metadata_prefix(row))
         and folder.name.startswith(prefix)
     ]
-    return matches[0] if len(matches) == 1 else None
+    if not matches:
+        return None
+    unique_matches: dict[str, dict[str, Any]] = {}
+    for row in matches:
+        identity = (
+            _post_id_from_url(row.get(COL_POST_URL))
+            or _post_id(row.get(COL_POST_ID))
+        )
+        if not identity:
+            identity = json.dumps(
+                row,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        unique_matches.setdefault(identity, row)
+    return (
+        next(iter(unique_matches.values()))
+        if len(unique_matches) == 1
+        else None
+    )
 
 
 def _fallback_id(folder: Path) -> str:

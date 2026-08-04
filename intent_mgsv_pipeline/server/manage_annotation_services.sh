@@ -44,35 +44,111 @@ status_service() {
     fi
 }
 
-case "${1:-status}" in
+start_target() {
+    case "$1" in
+        all)
+            start_target owner
+            start_target peer
+            start_target music-review
+            ;;
+        owner)
+            start_service mgsv-owner \
+                intent_mgsv_pipeline.server.owner_annotation_app 7860 \
+                --owner-id "$OWNER_ID"
+            ;;
+        peer)
+            start_service mgsv-peer \
+                intent_mgsv_pipeline.server.peer_annotation_app 7861 \
+                --owner-id "$OWNER_ID"
+            ;;
+        music-review)
+            start_service mgsv-music-review \
+                intent_mgsv_pipeline.server.music_review_app 7862 \
+                --owner-id "$OWNER_ID"
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+}
+
+stop_target() {
+    case "$1" in
+        all)
+            stop_target owner
+            stop_target peer
+            stop_target music-review
+            ;;
+        owner)
+            stop_service mgsv-owner
+            ;;
+        peer)
+            stop_service mgsv-peer
+            ;;
+        music-review)
+            stop_service mgsv-music-review
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+}
+
+status_target() {
+    case "$1" in
+        all)
+            status_target owner
+            status_target peer
+            status_target music-review
+            ;;
+        owner)
+            status_service mgsv-owner
+            ;;
+        peer)
+            status_service mgsv-peer
+            ;;
+        music-review)
+            status_service mgsv-music-review
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+}
+
+usage() {
+    echo "usage: $0 {start|stop|restart|status} [all|owner|peer|music-review]" >&2
+}
+
+ACTION="${1:-status}"
+TARGET="${2:-all}"
+
+case "$ACTION" in
     start)
         command -v tmux >/dev/null
-        start_service mgsv-owner \
-            intent_mgsv_pipeline.server.owner_annotation_app 7860 \
-            --owner-id "$OWNER_ID"
-        start_service mgsv-peer \
-            intent_mgsv_pipeline.server.peer_annotation_app 7861 \
-            --owner-id "$OWNER_ID"
-        start_service mgsv-music-review \
-            intent_mgsv_pipeline.server.music_review_app 7862 \
-            --owner-id "$OWNER_ID"
+        start_target "$TARGET" || {
+            usage
+            exit 2
+        }
         ;;
     stop)
-        stop_service mgsv-owner
-        stop_service mgsv-peer
-        stop_service mgsv-music-review
+        stop_target "$TARGET" || {
+            usage
+            exit 2
+        }
         ;;
     restart)
-        "$0" stop
-        "$0" start
+        "$0" stop "$TARGET"
+        "$0" start "$TARGET"
         ;;
     status)
-        status_service mgsv-owner
-        status_service mgsv-peer
-        status_service mgsv-music-review
+        status_target "$TARGET" || {
+            usage
+            exit 2
+        }
         ;;
     *)
-        echo "usage: $0 {start|stop|restart|status}" >&2
+        usage
         exit 2
         ;;
 esac

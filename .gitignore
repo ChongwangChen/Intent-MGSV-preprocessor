@@ -10,6 +10,7 @@ env/
 .env
 .env.*
 config/server.env
+config/douyin_collection_keywords.csv
 .idea/
 .vscode/
 

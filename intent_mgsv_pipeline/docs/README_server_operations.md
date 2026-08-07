@@ -614,3 +614,11 @@ E:\MGSV_preprocessor\server_reports\latest.txt
 
 把这个路径告诉本地 Codex，它就可以直接读取并分析。服务器 SSH 地址或端口改变时，
 可传入 `-Server`、`-Port`、`-User` 和 `-RemoteRoot` 参数。
+
+## 十、服务器下载抖音时持续 403
+
+若同一份 Cookie 在本机可以访问作品详情，但服务器持续返回 HTTP 403，不要继续
+刷新 Cookie 或反复重试。使用本机 SSH 反向代理，让 DouK 保持在服务器运行并将
+文件直接写入服务器磁盘：
+
+[服务器通过本机网络下载抖音数据](README_server_douyin_proxy_zh.md)

@@ -8,6 +8,11 @@ import pandas as pd
 
 from intent_mgsv_pipeline.data_collection.collect_douyin_browser_links import (
     CollectedLink,
+    _canonical_from_modal,
+    _duration_seconds_from_card_text,
+    _modal_work_id,
+    _non_target_reason,
+    _same_search_page,
     load_existing_links,
     load_keyword_tasks,
     normalize_douyin_url,
@@ -28,6 +33,82 @@ class DouyinBrowserCollectorTests(unittest.TestCase):
             ("https://www.douyin.com/note/456", "456", "image"),
         )
         self.assertIsNone(normalize_douyin_url("https://www.douyin.com/user/x"))
+
+    def test_extracts_canonical_url_from_shared_copy(self) -> None:
+        shared = (
+            "6.52 复制打开抖音，看看【示例作品】 "
+            "https://www.douyin.com/video/7540244096460688682?previous_page=search"
+        )
+        self.assertEqual(
+            normalize_douyin_url(shared),
+            (
+                "https://www.douyin.com/video/7540244096460688682",
+                "7540244096460688682",
+                "video",
+            ),
+        )
+
+    def test_uses_modal_id_as_copy_fallback(self) -> None:
+        modal_url = (
+            "https://www.douyin.com/search/test"
+            "?modal_id=7540244096460688682&type=general"
+        )
+        self.assertEqual(_modal_work_id(modal_url), "7540244096460688682")
+        self.assertEqual(
+            _canonical_from_modal(modal_url, "image"),
+            (
+                "https://www.douyin.com/note/7540244096460688682",
+                "7540244096460688682",
+                "image",
+            ),
+        )
+
+    def test_search_page_guard_rejects_blank_modal_and_other_keyword(self) -> None:
+        expected = "https://www.douyin.com/search/test?type=video"
+        self.assertTrue(
+            _same_search_page(
+                "https://www.douyin.com/search/test?type=video",
+                expected,
+            )
+        )
+        self.assertFalse(_same_search_page("about:blank", expected))
+        self.assertFalse(
+            _same_search_page(
+                "https://www.douyin.com/search/test"
+                "?modal_id=123456789012345&type=video",
+                expected,
+            )
+        )
+        self.assertFalse(
+            _same_search_page(
+                "https://www.douyin.com/search/other?type=video",
+                expected,
+            )
+        )
+
+    def test_parses_card_duration_and_filters_long_video(self) -> None:
+        self.assertEqual(_duration_seconds_from_card_text("06:02\n1.1万"), 362)
+        self.assertEqual(_duration_seconds_from_card_text("01:02:03"), 3723)
+        self.assertIsNone(_duration_seconds_from_card_text("图文\n2087"))
+        self.assertIn(
+            "超过限制",
+            _non_target_reason("06:02\n旅行记录", 300),
+        )
+        self.assertEqual(_non_target_reason("04:59\n旅行记录", 300), "")
+
+    def test_content_filter_is_conservative(self) -> None:
+        self.assertEqual(
+            _non_target_reason("00:30 #钢琴演奏 #独奏", 300),
+            "明确标注为乐器演奏",
+        )
+        self.assertEqual(
+            _non_target_reason("00:20 #清唱 #翻唱", 300),
+            "明确标注为清唱/无伴奏",
+        )
+        self.assertEqual(
+            _non_target_reason("00:15 #舞蹈 #卡点 #纯音乐", 300),
+            "",
+        )
 
     def test_loads_keyword_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -48,6 +48,7 @@ curl --proxy socks5h://127.0.0.1:10808 https://api.ipify.org
 conda activate douyin
 python scripts/configure_douk_proxy.py enable
 python scripts/configure_douk_proxy.py status
+python scripts/patch_douk_proxy_routing.py
 ```
 
 然后正常进入 DouK：
@@ -75,6 +76,8 @@ python scripts/configure_douk_proxy.py disable
 - 本机必须保持联网，SSH 通道窗口必须保持运行。
 - 当前 DouK 的 `proxy` 会同时代理详情请求和媒体下载，因此速度受本机网络、
   SSH 链路和服务器网络共同影响，但不会占用本机磁盘。
+- `patch_douk_proxy_routing.py` 会让批量作品详情显式使用配置中的代理，避免 DouK
+  的内部可选参数在重启后以 `proxy=None` 运行。脚本可以重复执行。
 - 若 SSH 报告 `remote port forwarding failed`，说明服务器 SSH 配置未允许反向
   转发，需要管理员开启 `AllowTcpForwarding`。
 - 不要在服务器上反复重试直接访问抖音；持续 403 时应先恢复本代理通道。

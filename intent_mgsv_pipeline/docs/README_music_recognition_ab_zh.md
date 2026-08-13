@@ -79,3 +79,21 @@ python scripts/run_server_preprocessing.py
 
 该命令依次执行正式识曲和歌曲准备、`auto.py`、增量导入数据库、路径修复及标注服务
 重启。Shazam 对照实验不会被这个命令自动调用。
+
+## ACRCloud `code=3003`
+
+`code=3003: requests limit exceeded` 表示账户请求次数额度已经耗尽，不是密钥过期，
+也不是网络错误。新版 `yt_dy_auto.py` 会在第一次收到 3003 时立即停止 ACRCloud
+识曲，不再把其余视频错误标记为 `recognition_failed`。
+
+旧版本已经写入、且 `recognition_error` 包含 `code=3003` 的行，会在下次运行时自动
+改为 `recognition_deferred_quota`，并保留到额度恢复或更换识曲后端时重新处理。
+
+额度耗尽不妨碍以下工作继续进行：
+
+- 已识曲歌曲的搜索、下载和自动对齐；
+- `auto.py` 的视频分镜、节拍和基础预处理；
+- 已进入数据库样本的人工标注。
+
+若不准备升级 ACRCloud，可先运行本页的 Shazam 对照实验。Shazam 新命中目前只生成
+人工候选，不会自动写入正式追踪表。

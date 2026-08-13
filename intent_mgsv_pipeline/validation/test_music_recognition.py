@@ -10,12 +10,14 @@ import pandas as pd
 
 from intent_mgsv_pipeline.runtime_config import RuntimePaths, load_runtime_paths
 from yt_dy_auto import (
+    ACRCloudQuotaExceeded,
     RECOGNITION_VERSION,
     RecognitionCandidate,
     build_sample_starts,
     choose_candidate,
     find_clean_music_for_video,
     process_videos,
+    repair_quota_exhausted_records,
     recognize_with_clean_audio_fallback,
     should_process,
     should_process_video,
@@ -23,6 +25,34 @@ from yt_dy_auto import (
 
 
 class MusicRecognitionTests(unittest.TestCase):
+    def test_repairs_rows_misclassified_after_quota_exhaustion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            tracking_path = Path(temp_name) / "tracking.xlsx"
+            frame = pd.DataFrame(
+                [
+                    {
+                        "video_id": "quota.mp4",
+                        "status": "recognition_failed",
+                        "recognition_version": RECOGNITION_VERSION,
+                        "recognition_error": "ACRCloud code=3003: requests limit exceeded",
+                    },
+                    {
+                        "video_id": "normal.mp4",
+                        "status": "recognition_failed",
+                        "recognition_version": RECOGNITION_VERSION,
+                        "recognition_error": "no match",
+                    },
+                ]
+            )
+            repaired, count = repair_quota_exhausted_records(tracking_path, frame)
+            self.assertEqual(count, 1)
+            quota_row = repaired[repaired["video_id"] == "quota.mp4"].iloc[0]
+            normal_row = repaired[repaired["video_id"] == "normal.mp4"].iloc[0]
+            self.assertEqual(quota_row["status"], "recognition_deferred_quota")
+            self.assertEqual(quota_row["recognition_version"], "")
+            self.assertEqual(normal_row["status"], "recognition_failed")
+            self.assertTrue(tracking_path.is_file())
+
     def test_finds_same_stem_douk_music(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -222,6 +252,45 @@ class MusicRecognitionTests(unittest.TestCase):
                 prepare.call_args.kwargs["video_ids"],
                 {video.name},
             )
+
+    def test_quota_exhaustion_stops_batch_without_recording_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            download_root = root / "download"
+            output_dir = root / "outputs"
+            download_root.mkdir()
+            output_dir.mkdir()
+            for name in ("one.mp4", "two.mp4"):
+                (download_root / name).write_bytes(b"video")
+            tracking = output_dir / "tracking.xlsx"
+            paths = RuntimePaths(
+                project_root=root,
+                douk_download_root=download_root,
+                douk_data_excel=root / "data.xlsx",
+                output_dir=output_dir,
+                full_music_dir=output_dir / "full_music",
+                full_songs_dir=output_dir / "full_songs",
+                acr_tracking_excel=tracking,
+                master_excel=output_dir / "master.xlsx",
+                server_db=output_dir / "server.sqlite3",
+                acr_config_file=root / "acr.json",
+            )
+            with (
+                patch(
+                    "yt_dy_auto.load_acrcloud_config",
+                    return_value={"host": "example", "access_key": "x", "access_secret": "y"},
+                ),
+                patch(
+                    "yt_dy_auto.recognize_with_clean_audio_fallback",
+                    side_effect=ACRCloudQuotaExceeded("ACRCloud code=3003"),
+                ) as recognize,
+            ):
+                counts = process_videos(paths, retry_failed=True)
+            self.assertEqual(counts["processed"], 0)
+            self.assertEqual(counts["failed"], 0)
+            self.assertEqual(counts["quota_exhausted"], 1)
+            recognize.assert_called_once()
+            self.assertFalse(tracking.exists())
 
 
 if __name__ == "__main__":

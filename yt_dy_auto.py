@@ -32,6 +32,10 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".flac", ".aac", ".opus")
 
 
+class ACRCloudQuotaExceeded(RuntimeError):
+    """Raised when ACRCloud rejects requests because the account quota is empty."""
+
+
 @dataclass(frozen=True)
 class RecognitionCandidate:
     title: str
@@ -201,9 +205,14 @@ def identify_sample(
     response.raise_for_status()
     result = response.json()
     status = result.get("status", {})
-    if status.get("code", -1) != 0:
+    status_code = status.get("code", -1)
+    if status_code != 0:
         message = status.get("msg", "unknown ACRCloud error")
-        raise RuntimeError(f"ACRCloud code={status.get('code')}: {message}")
+        if status_code == 3003:
+            raise ACRCloudQuotaExceeded(
+                f"ACRCloud code={status_code}: {message}"
+            )
+        raise RuntimeError(f"ACRCloud code={status_code}: {message}")
 
     candidates: list[RecognitionCandidate] = []
     for item in result.get("metadata", {}).get("music", [])[:3]:
@@ -299,6 +308,8 @@ def recognize_music_multi_window(
                 current_best.score >= strong_confidence or votes >= 2
             ):
                 break
+        except ACRCloudQuotaExceeded:
+            raise
         except Exception as exc:
             errors.append(f"{start:.2f}s: {type(exc).__name__}: {exc}")
         if request_interval > 0:
@@ -395,6 +406,29 @@ def load_tracking(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     return pd.read_excel(path)
+
+
+def repair_quota_exhausted_records(
+    tracking_path: Path,
+    tracking: pd.DataFrame,
+) -> tuple[pd.DataFrame, int]:
+    """Repair rows that older versions misclassified as recognition failures."""
+    if tracking.empty or "recognition_error" not in tracking.columns:
+        return tracking, 0
+    repaired = tracking.copy()
+    errors = repaired["recognition_error"].fillna("").astype(str)
+    mask = errors.str.contains("code=3003", case=False, regex=False)
+    count = int(mask.sum())
+    if not count:
+        return tracking, 0
+    if "status" not in repaired.columns:
+        repaired["status"] = ""
+    if "recognition_version" not in repaired.columns:
+        repaired["recognition_version"] = ""
+    repaired.loc[mask, "status"] = "recognition_deferred_quota"
+    repaired.loc[mask, "recognition_version"] = ""
+    repaired.to_excel(tracking_path, index=False)
+    return repaired, count
 
 
 def load_dataset_video_ids(path: Path) -> set[str]:
@@ -505,6 +539,15 @@ def process_videos(
 ) -> dict[str, int]:
     config = load_acrcloud_config(paths)
     tracking_df = load_tracking(paths.acr_tracking_excel)
+    tracking_df, repaired_quota_records = repair_quota_exhausted_records(
+        paths.acr_tracking_excel,
+        tracking_df,
+    )
+    if repaired_quota_records:
+        print(
+            "Repaired quota-limited tracking rows: "
+            f"{repaired_quota_records} -> recognition_deferred_quota"
+        )
     previous_by_video: dict[str, dict[str, Any]] = {}
     if not tracking_df.empty and "video_id" in tracking_df.columns:
         for record in tracking_df.to_dict("records"):
@@ -519,6 +562,8 @@ def process_videos(
         "processed": 0,
         "recognized": 0,
         "failed": 0,
+        "quota_exhausted": 0,
+        "repaired_quota_records": repaired_quota_records,
     }
     for video_path in find_video_files(paths.douk_download_root):
         counts["scanned"] += 1
@@ -537,13 +582,25 @@ def process_videos(
             break
 
         print(f"\n[{counts['processed'] + 1}] Recognizing: {video_id}")
-        result, recognition_media, recognition_source = recognize_with_clean_audio_fallback(
-            video_path,
-            config,
-            sample_duration=sample_duration,
-            max_samples=max_samples,
-            confidence_threshold=confidence_threshold,
-        )
+        try:
+            result, recognition_media, recognition_source = (
+                recognize_with_clean_audio_fallback(
+                    video_path,
+                    config,
+                    sample_duration=sample_duration,
+                    max_samples=max_samples,
+                    confidence_threshold=confidence_threshold,
+                )
+            )
+        except ACRCloudQuotaExceeded as exc:
+            counts["quota_exhausted"] = 1
+            print(
+                "  ACRCloud quota exhausted; stopping recognition immediately.\n"
+                f"  {exc}\n"
+                "  Current and remaining videos were left unchanged. "
+                "Previously recognized songs can still continue to preparation."
+            )
+            break
         counts["processed"] += 1
         title = result["title"]
         artist = result["artist"]
@@ -663,7 +720,9 @@ def main() -> None:
         f"skipped_dataset={counts['skipped_dataset']}, "
         f"processed={counts['processed']}, "
         f"recognized={counts['recognized']}, "
-        f"failed={counts['failed']}"
+        f"failed={counts['failed']}, "
+        f"quota_exhausted={counts['quota_exhausted']}, "
+        f"repaired_quota_records={counts['repaired_quota_records']}"
     )
 
 

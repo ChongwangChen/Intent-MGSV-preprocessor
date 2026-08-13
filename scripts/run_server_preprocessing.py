@@ -69,12 +69,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-import", action="store_true")
     parser.add_argument("--skip-restart", action="store_true")
     parser.add_argument("--music-limit", type=int, default=0)
+    parser.add_argument(
+        "--continue-after-music-limit",
+        action="store_true",
+        help=(
+            "Continue into auto.py/import/restart after a limited music test. "
+            "Without this explicit flag, --music-limit is recognition-only."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    limited_music_test = bool(
+        args.music_limit > 0 and not args.continue_after_music_limit
+    )
+    if limited_music_test:
+        args.skip_auto = True
+        args.skip_import = True
+        args.skip_restart = True
     root = Path(os.environ.get("MGSV_ROOT", PROJECT_ROOT)).expanduser().resolve()
     output_dir = Path(os.environ.get("MGSV_OUTPUT_DIR", root / "outputs")).resolve()
     excel = Path(os.environ.get("MGSV_EXCEL", output_dir / "MGSV_Master_Dataset.xlsx")).resolve()
@@ -141,6 +156,7 @@ def main() -> None:
         "log": str(log_path),
         "commands": commands,
         "append_only_import": True,
+        "limited_music_test": limited_music_test,
     }
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     if args.dry_run:

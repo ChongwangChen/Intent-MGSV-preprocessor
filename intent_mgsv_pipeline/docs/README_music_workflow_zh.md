@@ -66,6 +66,16 @@ python scripts/run_server_preprocessing.py
 python scripts/audit_music_pipeline.py --db "$MGSV_DB" --limit 50
 ```
 
+首次检查新环境或新一批数据时，可先只测试 5 条音乐处理：
+
+```bash
+python scripts/run_server_preprocessing.py --music-limit 5
+```
+
+指定 `--music-limit` 时默认只执行有限条识曲、下载和对齐，不会继续运行全量
+`auto.py`、导入数据库或重启网站。确认音乐结果正常后，再运行不带 limit 的完整
+命令 `python scripts/run_server_preprocessing.py`。
+
 访问 `7862`：
 
 - 歌曲正确且 offset 正确：填写 Genre 后确认。

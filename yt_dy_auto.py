@@ -25,10 +25,11 @@ from intent_mgsv_pipeline.runtime_config import (
 )
 
 
-RECOGNITION_VERSION = "multi_window_v1"
+RECOGNITION_VERSION = "music_first_v2"
 DEFAULT_CONFIDENCE_THRESHOLD = 75
 DEFAULT_STRONG_CONFIDENCE = 90
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".flac", ".aac", ".opus")
 
 
 @dataclass(frozen=True)
@@ -331,6 +332,65 @@ def find_video_files(root: Path) -> list[Path]:
     )
 
 
+def find_clean_music_for_video(video_path: Path) -> Path | None:
+    """Prefer DouK's separately downloaded Music file over mixed video audio."""
+    exact = [video_path.with_suffix(extension) for extension in AUDIO_EXTENSIONS]
+    for candidate in exact:
+        if candidate.is_file() and candidate.stat().st_size > 1024:
+            return candidate
+    audio_files = sorted(
+        path
+        for path in video_path.parent.iterdir()
+        if path.is_file()
+        and path.suffix.casefold() in AUDIO_EXTENSIONS
+        and path.stat().st_size > 1024
+    )
+    return audio_files[0] if len(audio_files) == 1 else None
+
+
+def recognize_with_clean_audio_fallback(
+    video_path: Path,
+    config: dict[str, Any],
+    *,
+    sample_duration: float,
+    max_samples: int,
+    confidence_threshold: int,
+) -> tuple[dict[str, Any], Path, str]:
+    clean_music = find_clean_music_for_video(video_path)
+    if clean_music is not None:
+        clean_result = recognize_music_multi_window(
+            clean_music,
+            config,
+            sample_duration=sample_duration,
+            max_samples=max_samples,
+            confidence_threshold=confidence_threshold,
+        )
+        if clean_result["status"] == "recognized":
+            return clean_result, clean_music, "douk_music"
+        video_result = recognize_music_multi_window(
+            video_path,
+            config,
+            sample_duration=sample_duration,
+            max_samples=max_samples,
+            confidence_threshold=confidence_threshold,
+        )
+        errors = [
+            f"douk_music: {clean_result['recognition_error'] or 'no match'}",
+            f"video_audio: {video_result['recognition_error'] or 'no match'}",
+        ]
+        video_result["recognition_error"] = " | ".join(errors)
+        return video_result, video_path, "video_fallback"
+
+    result = recognize_music_multi_window(
+        video_path,
+        config,
+        sample_duration=sample_duration,
+        max_samples=max_samples,
+        confidence_threshold=confidence_threshold,
+    )
+    return result, video_path, "video_only"
+
+
 def load_tracking(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
@@ -477,7 +537,7 @@ def process_videos(
             break
 
         print(f"\n[{counts['processed'] + 1}] Recognizing: {video_id}")
-        result = recognize_music_multi_window(
+        result, recognition_media, recognition_source = recognize_with_clean_audio_fallback(
             video_path,
             config,
             sample_duration=sample_duration,
@@ -489,6 +549,10 @@ def process_videos(
         artist = result["artist"]
         full_music_path = ""
         final_status = result["status"]
+        print(
+            f"  recognition source: {recognition_source} -> "
+            f"{recognition_media.name}"
+        )
 
         if title:
             counts["recognized"] += 1
@@ -515,6 +579,8 @@ def process_videos(
                 "recognition_sample_summary": result["sample_summary"],
                 "recognition_error": result["recognition_error"],
                 "recognition_version": RECOGNITION_VERSION,
+                "recognition_source": recognition_source,
+                "recognition_media_path": str(recognition_media),
                 "full_music_path": full_music_path,
                 "status": final_status,
             }

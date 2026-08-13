@@ -14,13 +14,90 @@ from yt_dy_auto import (
     RecognitionCandidate,
     build_sample_starts,
     choose_candidate,
+    find_clean_music_for_video,
     process_videos,
+    recognize_with_clean_audio_fallback,
     should_process,
     should_process_video,
 )
 
 
 class MusicRecognitionTests(unittest.TestCase):
+    def test_finds_same_stem_douk_music(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            video = root / "sample.mp4"
+            music = root / "sample.mp3"
+            video.write_bytes(b"video")
+            music.write_bytes(b"m" * 2048)
+            self.assertEqual(find_clean_music_for_video(video), music)
+
+    def test_clean_music_is_tried_before_video_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            video = root / "sample.mp4"
+            music = root / "sample.m4a"
+            video.write_bytes(b"video")
+            music.write_bytes(b"m" * 2048)
+            recognized = {
+                "title": "Song",
+                "artist": "Artist",
+                "status": "recognized",
+                "recognition_error": "",
+            }
+            with patch(
+                "yt_dy_auto.recognize_music_multi_window",
+                return_value=recognized,
+            ) as identify:
+                result, source_path, source = recognize_with_clean_audio_fallback(
+                    video,
+                    {},
+                    sample_duration=15,
+                    max_samples=4,
+                    confidence_threshold=75,
+                )
+            self.assertEqual(result["title"], "Song")
+            self.assertEqual(source_path, music)
+            self.assertEqual(source, "douk_music")
+            identify.assert_called_once()
+            self.assertEqual(identify.call_args.args[0], music)
+
+    def test_video_audio_is_fallback_when_clean_music_has_no_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            video = root / "sample.mp4"
+            music = root / "sample.mp3"
+            video.write_bytes(b"video")
+            music.write_bytes(b"m" * 2048)
+            failed = {
+                "status": "recognition_failed",
+                "recognition_error": "no match",
+            }
+            recognized = {
+                "title": "Song",
+                "artist": "Artist",
+                "status": "recognized",
+                "recognition_error": "",
+            }
+            with patch(
+                "yt_dy_auto.recognize_music_multi_window",
+                side_effect=[failed, recognized],
+            ) as identify:
+                result, source_path, source = recognize_with_clean_audio_fallback(
+                    video,
+                    {},
+                    sample_duration=15,
+                    max_samples=4,
+                    confidence_threshold=75,
+                )
+            self.assertEqual(result["title"], "Song")
+            self.assertEqual(source_path, video)
+            self.assertEqual(source, "video_fallback")
+            self.assertEqual(
+                [call.args[0] for call in identify.call_args_list],
+                [music, video],
+            )
+
     def test_sample_starts_are_spread_and_bounded(self) -> None:
         starts = build_sample_starts(60.0, sample_duration=15.0, max_samples=4)
         self.assertEqual(len(starts), 4)

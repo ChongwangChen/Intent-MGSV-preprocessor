@@ -1,0 +1,3 @@
+# Optional A/B experiment backend. Not required by the production annotator.
+shazamio==0.8.1
+

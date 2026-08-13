@@ -52,11 +52,31 @@ class MergeDouyinCollectionTests(unittest.TestCase):
 
             records, counters = load_collection_records(
                 root,
-                historical_links={"https://www.douyin.com/note/202"},
+                historical_work_ids={"202"},
             )
             self.assertEqual([record["work_id"] for record in records], ["101", "303"])
             self.assertEqual(counters["duplicates_removed"], 1)
             self.assertEqual(counters["historical_douk_removed"], 1)
+            self.assertEqual(counters["sessions_merged"], 2)
+
+    def test_accepts_one_session_and_deduplicates_by_work_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "session_a"
+            session.mkdir()
+            with (session / "collected_links.csv").open(
+                "w", encoding="utf-8-sig", newline=""
+            ) as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["url", "work_id", "content_type", "keyword", "collected_at"],
+                )
+                writer.writeheader()
+                writer.writerow({"url": "https://www.douyin.com/video/101"})
+                writer.writerow({"url": "https://www.douyin.com/note/101"})
+            records, counters = load_collection_records(session)
+            self.assertEqual([record["work_id"] for record in records], ["101"])
+            self.assertEqual(counters["duplicates_removed"], 1)
+            self.assertEqual(counters["sessions_merged"], 1)
 
     def test_writes_upload_zip_with_merged_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

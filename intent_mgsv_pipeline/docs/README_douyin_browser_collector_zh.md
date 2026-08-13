@@ -123,6 +123,31 @@ python -m intent_mgsv_pipeline.data_collection.collect_douyin_browser_links `
   --skip-login-wait
 ```
 
+### 推荐：同步服务器记录后自动采集两轮
+
+服务器是正式下载数据池时，采集前必须先使用服务器最新的 `Download.xlsx`，否则
+本地不知道哪些作品已经下载，会重复收集搜索结果顶部的热门作品。
+
+```powershell
+cd E:\MGSV_preprocessor
+conda activate mgsv_data
+
+.\scripts\collect_new_douyin_rounds.ps1
+```
+
+脚本会自动：
+
+```text
+从服务器下载最新 Download.xlsx
+-> 使用 round3、round4 两份新关键词表采集
+-> 按作品 ID 排除服务器历史数据和本地历史会话
+-> 只合并本次新建的两个会话
+-> 每 20 条分批并生成服务器上传 ZIP
+```
+
+输出末尾会显示本次两个会话名和 ZIP 路径。采集器与合并器均按作品 ID 去重，
+因此同一作品的 `/video/<ID>` 与 `/note/<ID>` 不会再被视为两条数据。
+
 ## 七、输出
 
 每次运行建立时间戳目录：
@@ -149,6 +174,29 @@ DouK-Source/Volume/Data/Download.xlsx 中已采集作品
 ```
 
 因此同一作品不会在后续批次中重复输出。
+
+服务器作为正式数据池时，必须通过 `--douk-metadata` 指向刚同步下来的服务器
+`Download.xlsx`。只使用本地旧表不能排除服务器已经下载的作品。
+
+合并一个本次会话：
+
+```powershell
+python -m intent_mgsv_pipeline.data_collection.merge_douyin_collection `
+  --collection-root outputs\douyin_link_collection\20260812_110419 `
+  --douk-metadata outputs\server_sync\Download.server.latest.xlsx `
+  --package-name douyin_new_20260812
+```
+
+从采集根目录选择多个本次会话：
+
+```powershell
+python -m intent_mgsv_pipeline.data_collection.merge_douyin_collection `
+  --collection-root outputs\douyin_link_collection `
+  --session 20260812_104831 `
+  --session 20260812_110419 `
+  --douk-metadata outputs\server_sync\Download.server.latest.xlsx `
+  --package-name douyin_new_20260812
+```
 
 ## 九、常用参数
 

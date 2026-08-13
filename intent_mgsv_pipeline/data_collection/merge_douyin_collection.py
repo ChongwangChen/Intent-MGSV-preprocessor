@@ -23,35 +23,52 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_UPLOAD_ROOT = PROJECT_ROOT / "outputs" / "douyin_server_upload"
 
 
-def _historical_douk_links(path: Path) -> set[str]:
+def _historical_douk_work_ids(path: Path) -> set[str]:
     if not path.is_file():
         return set()
     frame = pd.read_excel(path, keep_default_na=False)
     column = "\u4f5c\u54c1\u94fe\u63a5"
     if column not in frame.columns:
         return set()
-    links: set[str] = set()
+    work_ids: set[str] = set()
     for value in frame[column]:
         normalized = normalize_douyin_url(value)
         if normalized:
-            links.add(normalized[0])
-    return links
+            work_ids.add(normalized[1])
+    return work_ids
+
+
+def resolve_session_dirs(
+    collection_root: Path,
+    session_names: list[str] | None = None,
+) -> list[Path]:
+    if (collection_root / "collected_links.csv").is_file():
+        if session_names:
+            raise ValueError("--session cannot be used when collection root is a session")
+        return [collection_root]
+    if session_names:
+        session_dirs = [collection_root / name for name in session_names]
+        missing = [str(path) for path in session_dirs if not path.is_dir()]
+        if missing:
+            raise FileNotFoundError("Collection sessions not found: " + ", ".join(missing))
+        return session_dirs
+    return sorted(path for path in collection_root.iterdir() if path.is_dir())
 
 
 def load_collection_records(
     collection_root: Path,
     *,
-    historical_links: set[str] | None = None,
+    historical_work_ids: set[str] | None = None,
+    session_names: list[str] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, int]]:
-    historical_links = historical_links or set()
+    historical_work_ids = historical_work_ids or set()
     records: list[dict[str, str]] = []
-    seen: set[str] = set()
+    seen_work_ids: set[str] = set()
     duplicate_count = 0
     historical_count = 0
 
-    for session_dir in sorted(
-        path for path in collection_root.iterdir() if path.is_dir()
-    ):
+    session_dirs = resolve_session_dirs(collection_root, session_names)
+    for session_dir in session_dirs:
         manifest = session_dir / "collected_links.csv"
         if not manifest.is_file():
             continue
@@ -61,13 +78,13 @@ def load_collection_records(
                 if not normalized:
                     continue
                 url, work_id, content_type = normalized
-                if url in historical_links:
+                if work_id in historical_work_ids:
                     historical_count += 1
                     continue
-                if url in seen:
+                if work_id in seen_work_ids:
                     duplicate_count += 1
                     continue
-                seen.add(url)
+                seen_work_ids.add(work_id)
                 records.append(
                     {
                         "url": url,
@@ -81,6 +98,7 @@ def load_collection_records(
     return records, {
         "duplicates_removed": duplicate_count,
         "historical_douk_removed": historical_count,
+        "sessions_merged": len(session_dirs),
     }
 
 
@@ -223,6 +241,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Merge browser-collected Douyin links into a server upload package."
     )
     parser.add_argument("--collection-root", default=str(DEFAULT_OUTPUT_DIR))
+    parser.add_argument(
+        "--session",
+        action="append",
+        default=[],
+        help="Session directory name to include; repeat for multiple sessions.",
+    )
     parser.add_argument("--douk-metadata", default=str(DEFAULT_DOUK_METADATA))
     parser.add_argument("--output-root", default=str(DEFAULT_UPLOAD_ROOT))
     parser.add_argument("--package-name", default="")
@@ -235,10 +259,11 @@ def main() -> None:
     collection_root = Path(args.collection_root)
     if not collection_root.is_dir():
         raise SystemExit(f"Collection root not found: {collection_root}")
-    historical_links = _historical_douk_links(Path(args.douk_metadata))
+    historical_work_ids = _historical_douk_work_ids(Path(args.douk_metadata))
     records, counters = load_collection_records(
         collection_root,
-        historical_links=historical_links,
+        historical_work_ids=historical_work_ids,
+        session_names=args.session or None,
     )
     summary = write_server_upload_package(
         records,

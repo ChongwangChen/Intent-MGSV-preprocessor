@@ -158,19 +158,19 @@ def load_keyword_tasks(path: Path) -> list[KeywordTask]:
     return tasks
 
 
-def _links_from_text_files(output_dir: Path) -> set[str]:
-    links: set[str] = set()
+def _work_ids_from_text_files(output_dir: Path) -> set[str]:
+    work_ids: set[str] = set()
     if not output_dir.is_dir():
-        return links
+        return work_ids
     for path in output_dir.rglob("*.txt"):
         for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
             normalized = normalize_douyin_url(line)
             if normalized:
-                links.add(normalized[0])
-    return links
+                work_ids.add(normalized[1])
+    return work_ids
 
 
-def _links_from_douk_metadata(path: Path) -> set[str]:
+def _work_ids_from_douk_metadata(path: Path) -> set[str]:
     if not path.is_file():
         return set()
     try:
@@ -181,16 +181,17 @@ def _links_from_douk_metadata(path: Path) -> set[str]:
     url_column = "\u4f5c\u54c1\u94fe\u63a5"
     if url_column not in frame.columns:
         return set()
-    links: set[str] = set()
+    work_ids: set[str] = set()
     for value in frame[url_column]:
         normalized = normalize_douyin_url(value)
         if normalized:
-            links.add(normalized[0])
-    return links
+            work_ids.add(normalized[1])
+    return work_ids
 
 
 def load_existing_links(output_dir: Path, douk_metadata: Path) -> set[str]:
-    return _links_from_text_files(output_dir) | _links_from_douk_metadata(
+    """Return existing Douyin work IDs from local sessions and DouK metadata."""
+    return _work_ids_from_text_files(output_dir) | _work_ids_from_douk_metadata(
         douk_metadata
     )
 
@@ -608,7 +609,7 @@ def _scroll_search_results(page: Any) -> tuple[str, str]:
 def collect_task(
     page: Any,
     task: KeywordTask,
-    excluded_urls: set[str],
+    excluded_work_ids: set[str],
     *,
     max_scrolls: int,
     scroll_pause_ms: int,
@@ -740,10 +741,10 @@ def collect_task(
                     f"requested={task.content_type}"
                 )
                 continue
-            if url in excluded_urls:
+            if work_id in excluded_work_ids:
                 continue
 
-            excluded_urls.add(url)
+            excluded_work_ids.add(work_id)
             record = CollectedLink(
                 url=url,
                 work_id=work_id,
@@ -838,11 +839,11 @@ def _launch_browser(
             "requirements_collection.txt"
         ) from exc
 
-    excluded_urls = load_existing_links(
+    excluded_work_ids = load_existing_links(
         Path(args.output_dir),
         Path(args.douk_metadata),
     )
-    _console(f"Existing/DouK links excluded: {len(excluded_urls)}")
+    _console(f"Existing/DouK work IDs excluded: {len(excluded_work_ids)}")
     all_records: list[CollectedLink] = []
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     profile_dir = Path(args.profile_dir)
@@ -889,7 +890,7 @@ def _launch_browser(
                     collect_task(
                         page,
                         task,
-                        excluded_urls,
+                        excluded_work_ids,
                         max_scrolls=args.max_scrolls,
                         scroll_pause_ms=args.scroll_pause_ms,
                         timeout_ms=args.timeout_ms,

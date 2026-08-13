@@ -319,6 +319,41 @@ outputs/MGSV_Master_Dataset.xlsx
 
 同一时间只能有一个 `auto.py` 进程写主表。
 
+### 4.1 下载完成后一条命令进入人工标注
+
+完成本批 DouK 下载后，在服务器项目根目录运行：
+
+```bash
+source config/server.env
+conda activate mgsv_data
+
+python scripts/run_server_preprocessing.py --dry-run
+python scripts/run_server_preprocessing.py
+```
+
+流水线顺序为：
+
+```text
+yt_dy_auto.py 自动识曲、下载完整歌曲并对齐
+-> 使用 MGSV_PREPROCESS_PYTHON 运行 auto.py
+-> 以只追加、不覆盖模式导入服务器数据库
+-> 修复新增视频物理路径
+-> 重启并检查三个标注服务
+```
+
+运行前会为服务器 SQLite 数据库和主表 Excel 分别建立备份，并创建进程锁，避免
+两个 `auto.py` 同时写主表。数据库导入不使用 `--replace` 或
+`--update-existing`，因此不会覆盖已有主标注、音乐核验和多人标注结果。
+
+日志和运行报告位于：
+
+```text
+outputs/server/preprocessing_logs/
+```
+
+自动识曲或完整歌曲准备未成功的样本仍会进入对应人工核验状态，不会被伪装为已
+确认。流水线完成后，先访问音乐核验网页处理歌曲和 offset，再进入主标注网页。
+
 ## 五、导入服务器数据库
 
 第一次初始化数据库时：

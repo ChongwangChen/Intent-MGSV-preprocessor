@@ -71,13 +71,58 @@ python scripts/configure_douk_proxy.py disable
 
 最后在本地 PowerShell 通道窗口按 `Ctrl+C`。
 
+## 五、自动分批下载
+
+新采集链接包上传并解压后，可以跳过 DouK 的重复菜单操作。新包默认只处理尚未
+进入服务器下载记录的作品，并使用小批次降低代理连接压力：
+
+```bash
+cd /data/users/ccw/intent_mgsv/repo/MGSV_preprocessor
+conda activate douyin
+
+python scripts/download_douyin_batches.py \
+  /data/users/ccw/intent_mgsv/transfer/douyin_expand_120_20260812 \
+  --batch-size 5 \
+  --batches-per-process 4 \
+  --max-rounds 2 \
+  --pause-seconds 60 \
+  --abort-after-network-errors 8
+```
+
+这里仍按每小批 5 条控制请求压力，但连续 4 个小批共用一个 DouK
+进程。120 条链接通常只需启动约 6 次 DouK，而不是 24 次。
+
+脚本会在每个 DouK 进程组结束后重新读取 `Download.xlsx`，成功作品不会进入下一
+轮。若某个进程组没有新增任何作品，同时出现大量 TLS、403 或详情获取失败，网络
+熔断会立即停止后续任务并生成 `unresolved_links.txt`，避免失效代理连续重试全部
+链接。
+
+只有明确需要检查历史作品并补下载 Music 时才增加 `--run-original-batches`。该
+模式会严格执行所有原始 TXT，不适合已经完成服务器去重的新采集包。
+
+`patch_douk_proxy_routing.py` 除了让大体积媒体文件保持服务器直连，还会让作品
+详情请求复用 DouK 的异步代理连接，避免每个作品都重新经历 SOCKS 和 TLS 握手。
+
+运行日志和最终未完成链接保存在：
+
+```text
+outputs/server/douyin_batch_download/<时间>/
+```
+
+只检查重复率而不开始下载：
+
+```bash
+python scripts/download_douyin_batches.py \
+  /data/users/ccw/intent_mgsv/transfer/douyin_expand_120_20260812 \
+  --dry-run
+```
+
 ## 注意事项
 
 - 本机必须保持联网，SSH 通道窗口必须保持运行。
-- 当前 DouK 的 `proxy` 会同时代理详情请求和媒体下载，因此速度受本机网络、
-  SSH 链路和服务器网络共同影响，但不会占用本机磁盘。
-- `patch_douk_proxy_routing.py` 会让批量作品详情显式使用配置中的代理，避免 DouK
-  的内部可选参数在重启后以 `proxy=None` 运行。脚本可以重复执行。
+- `patch_douk_proxy_routing.py` 会让批量作品详情显式使用配置中的代理，同时为
+  视频、图片和音乐建立服务器直连下载客户端。这样 SSH 只承载小体积元数据请求，
+  大文件不会挤占隧道。脚本可以重复执行。
 - 若 SSH 报告 `remote port forwarding failed`，说明服务器 SSH 配置未允许反向
   转发，需要管理员开启 `AllowTcpForwarding`。
 - 不要在服务器上反复重试直接访问抖音；持续 403 时应先恢复本代理通道。

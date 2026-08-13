@@ -14,6 +14,9 @@ import librosa
 import numpy as np
 import tensorflow as tf
 from intent_mgsv_pipeline.runtime_config import PATHS
+from intent_mgsv_pipeline.preprocessing.prepared_music import (
+    load_prepared_music_index,
+)
 
 # ==================== 【TensorFlow 专属消音器】 ====================
 tf.get_logger().setLevel('ERROR')
@@ -43,6 +46,7 @@ SCAN_ROOTS = [DOUK_DOWNLOAD_ROOT]
 OUTPUT_DIR           = str(PATHS.output_dir)
 FULL_MUSIC_DIR       = str(PATHS.full_music_dir)
 ACR_TRACKING_EXCEL   = str(PATHS.acr_tracking_excel)
+SERVER_DB            = PATHS.server_db
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 限制 TF 显存
@@ -782,6 +786,14 @@ def main():
 
     print("-" * 50)
 
+    prepared_music_index = load_prepared_music_index(
+        SERVER_DB,
+        owner_id=os.environ.get("MGSV_OWNER_ID", "owner"),
+    )
+    print(
+        f"Music preparation records available: {len(prepared_music_index)}"
+    )
+
     # =========================================================
     # 📋 加载 DouK-Source 元数据（完整描述 + 音乐 CDN 链接）
     # =========================================================
@@ -860,7 +872,11 @@ def main():
             # ---- 判断是否有完整原曲可用 ----
             # 优先级：ACR追踪表 > DouK 音乐CDN链接 > 视频自带音频
             acr_info = acr_index.get(v_file, {})
-            full_music_path = acr_info.get('full_music_path', '')
+            prepared_info = prepared_music_index.get(v_file, {})
+            full_music_path = (
+                prepared_info.get('full_song_path', '')
+                or acr_info.get('full_music_path', '')
+            )
             has_full_music  = bool(full_music_path and os.path.exists(full_music_path))
 
             # 若 ACR 追踪表没有，但 DouK 有 CDN 音乐链接，则直接下载
@@ -892,7 +908,30 @@ def main():
             m_bundled_duration = get_audio_metadata(music_path)   # 自带音频时长（用于 1:1 判断）
 
             # --- 高阶算法：节奏与视觉 ---
-            m_start, m_end   = run_audio_alignment(video_path, align_source)
+            prepared_offset = prepared_info.get('effective_offset')
+            prepared_duration = prepared_info.get('aligned_duration')
+            if has_full_music and prepared_offset is not None:
+                m_start = round(float(prepared_offset), 3)
+                effective_duration = (
+                    float(prepared_duration)
+                    if prepared_duration is not None
+                    else max(
+                        0.0,
+                        v_duration
+                        - float(prepared_info.get('video_audio_start') or 0.0),
+                    )
+                )
+                m_end = round(m_start + effective_duration, 3)
+                alignment_source = prepared_info.get(
+                    'alignment_source', 'music_preparation'
+                )
+                print(
+                    f"  Using prepared alignment: offset={m_start:.3f}s "
+                    f"source={alignment_source}"
+                )
+            else:
+                m_start, m_end = run_audio_alignment(video_path, align_source)
+                alignment_source = 'legacy_dtw_fallback'
             beats_rel, bpm_val = run_beatnet(align_source, m_start, m_end)
             rhythm_cat       = get_rhythm_category(bpm_val)
             all_visual_beats = run_transnetv2(video_path)
@@ -922,8 +961,9 @@ def main():
                 # —— 自动填充 ——
                 'video_id':                  v_file,
                 'music_id':                  a_file,
-                'song_title':                acr_info.get('song_title', ''),
-                'song_artist':               acr_info.get('song_artist', ''),
+                'song_title':                prepared_info.get('song_title') or acr_info.get('song_title', ''),
+                'song_artist':               prepared_info.get('song_artist') or acr_info.get('song_artist', ''),
+                # Verification remains owned by the SQLite review transaction.
                 'song_verified':             '',
                 'acr_confidence':            acr_info.get('acr_confidence', ''),
                 'recog_confidence':          acr_info.get('acr_confidence', ''),
@@ -946,6 +986,11 @@ def main():
                 'song_end':                  m_end,
                 'music_grounding_need':      grounding_need,
                 'full_music_path':           full_music_path if has_full_music else '',
+                'full_song_path':            full_music_path if has_full_music else '',
+                'qq_song_mid':               prepared_info.get('qq_song_mid', ''),
+                'match_score':               prepared_info.get('match_score'),
+                'music_preparation_status':  prepared_info.get('preparation_status', ''),
+                'alignment_source':          alignment_source,
                 'video_total_duration':      v_duration,
                 'video_width':               v_width,
                 'video_height':              v_height,

@@ -163,13 +163,22 @@ class DouyinBrowserCollectorTests(unittest.TestCase):
                 [{"\u4f5c\u54c1\u94fe\u63a5": "https://www.douyin.com/note/222"}]
             ).to_excel(metadata, index=False)
             links = load_existing_links(output_dir, metadata)
-            self.assertEqual(
-                links,
-                {
-                    "https://www.douyin.com/video/111",
-                    "https://www.douyin.com/note/222",
-                },
+            self.assertEqual(links, {"111", "222"})
+
+    def test_existing_work_ids_collapse_video_and_note_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            (output_dir / "old.txt").write_text(
+                "https://www.douyin.com/video/111\n",
+                encoding="utf-8",
             )
+            metadata = root / "Download.xlsx"
+            pd.DataFrame(
+                [{"\u4f5c\u54c1\u94fe\u63a5": "https://www.douyin.com/note/111"}]
+            ).to_excel(metadata, index=False)
+            self.assertEqual(load_existing_links(output_dir, metadata), {"111"})
 
 
 if __name__ == "__main__":
